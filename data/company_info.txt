@@ -1,0 +1,14 @@
+# Acme Corp Support Documentation
+
+## Product: SuperWidget 3000
+The SuperWidget 3000 is our flagship smart home controller. It supports Zigbee, Z-Wave, and Matter protocols.
+
+### Common Troubleshooting
+1. **Device not connecting**: Ensure the SuperWidget is within 30 feet of your router. Reset the device by holding the button for 10 seconds.
+2. **Firmware Update**: Firmware updates are pushed automatically every Tuesday at 2 AM. Do not disconnect power during updates.
+
+## Shipping Policy
+We offer free standard shipping on all orders over $50. Standard shipping takes 3-5 business days. Express shipping (1-2 days) is available for $15.
+
+## Return Policy
+Customers can return any product within 30 days of purchase for a full refund, provided the item is in its original packaging.
