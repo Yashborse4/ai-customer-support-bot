@@ -1,9 +1,8 @@
-
 "use client";
 
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Image as ImageIcon, User, Bot, Loader2, X } from "lucide-react";
+import { Send, Image as ImageIcon, User, Bot, Loader2, X, Sparkles, Shield, Database, ChevronRight, HelpCircle, ArrowRight } from "lucide-react";
 import axios from "axios";
 
 interface Message {
@@ -14,11 +13,33 @@ interface Message {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+const SUGGESTED_PROMPTS = [
+  {
+    title: "Troubleshoot SuperWidget",
+    desc: "Device not connecting & setup",
+    prompt: "How do I troubleshoot a SuperWidget 3000 that won't connect?",
+    category: "technical"
+  },
+  {
+    title: "Shipping & Rates",
+    desc: "Free standard shipping details",
+    prompt: "What is your shipping policy and how long does standard shipping take?",
+    category: "shipping"
+  },
+  {
+    title: "30-Day Return Policy",
+    desc: "Refund eligibility and packaging",
+    prompt: "Can I return a product after 20 days for a full refund?",
+    category: "returns"
+  }
+];
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [image, setImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showInsights, setShowInsights] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -39,12 +60,13 @@ export default function ChatPage() {
     }
   };
 
-  const handleSend = async () => {
-    if (!input.trim() && !image) return;
+  const handleSend = async (customPrompt?: string) => {
+    const textToSend = customPrompt || input;
+    if (!textToSend.trim() && !image) return;
 
     const newMessage: Message = {
       role: "user",
-      content: input,
+      content: textToSend,
       image_url: image || undefined,
     };
 
@@ -72,146 +94,345 @@ export default function ChatPage() {
       console.error("Chat Error:", error);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Sorry, I encountered an error. Please check your connection." },
+        { role: "assistant", content: "Sorry, I encountered an error connecting to the support backend. Please check your connection." },
       ]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Simple formatter for lists & bold text in messages
+  const formatMessageContent = (text: string) => {
+    return text.split('\n').map((line, idx) => {
+      let content = line;
+      // Bold text formatting **text**
+      const boldRegex = /\*\*(.*?)\*\*/g;
+      const parts = [];
+      let lastIndex = 0;
+      let match;
+      
+      while ((match = boldRegex.exec(line)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(line.substring(lastIndex, match.index));
+        }
+        parts.push(<strong key={match.index} className="text-white font-semibold">{match[1]}</strong>);
+        lastIndex = boldRegex.lastIndex;
+      }
+      if (lastIndex < line.length) {
+        parts.push(line.substring(lastIndex));
+      }
+
+      const formattedLine = parts.length > 0 ? parts : content;
+
+      if (line.startsWith('- ') || line.startsWith('* ')) {
+        return <li key={idx} className="ml-4 list-disc text-white/90 my-1">{formattedLine.toString().substring(2)}</li>;
+      }
+      if (/^\d+\.\s/.test(line)) {
+        return <li key={idx} className="ml-4 list-decimal text-white/90 my-1">{line.replace(/^\d+\.\s/, '')}</li>;
+      }
+      return <p key={idx} className="my-1 min-h-[1rem]">{formattedLine}</p>;
+    });
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-black text-white font-sans overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center justify-between px-8 py-4 border-b border-white/10 bg-black/50 backdrop-blur-md z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
-            <Bot className="text-black w-5 h-5" />
-          </div>
-          <h1 className="text-lg font-semibold tracking-tight">Acme Corp Support</h1>
-        </div>
-        <div className="text-xs text-white/40 flex items-center gap-2">
-          <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-          System Online
-        </div>
-      </header>
-
-      {/* Chat Area */}
-      <div 
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-4 py-8 space-y-6 scrollbar-hide"
-      >
-        <AnimatePresence initial={false}>
-          {messages.length === 0 && (
-            <motion.div 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex flex-col items-center justify-center h-full text-center space-y-4"
-            >
-              <Bot className="w-12 h-12 text-white/20" />
-              <div className="space-y-2">
-                <h2 className="text-xl font-medium text-white/80">How can I help you?</h2>
-                <p className="text-sm text-white/40 max-w-sm">
-                  Ask me about products, shipping, or upload a screenshot of an issue.
-                </p>
+    <div className="flex h-screen bg-mesh-glow bg-black text-white font-sans overflow-hidden">
+      {/* Main Chat Layout */}
+      <div className="flex-1 flex flex-col h-full relative z-10 border-r border-white/5">
+        
+        {/* Top Header */}
+        <header className="flex items-center justify-between px-8 py-4 border-b border-white/10 bg-black/40 backdrop-blur-xl z-20">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
+              <Bot className="text-white w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-sm font-semibold tracking-wide text-gradient">Acme Support Copilot</h1>
+              <div className="text-[10px] text-white/40 flex items-center gap-1.5 mt-0.5">
+                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                Active & Connected
               </div>
-            </motion.div>
-          )}
-
-          {messages.map((msg, idx) => (
-            <motion.div
-              key={idx}
-              initial={{ opacity: 0, x: msg.role === "user" ? 20 : -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ type: "spring", stiffness: 260, damping: 20 }}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div className={`max-w-[80%] flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}>
-                <div className={`px-4 py-3 rounded-2xl ${
-                  msg.role === "user" 
-                    ? "bg-white text-black" 
-                    : "bg-white/5 border border-white/10 text-white/90"
-                }`}>
-                  {msg.content && <p className="text-sm leading-relaxed">{msg.content}</p>}
-                  {msg.image_url && (
-                    <img 
-                      src={msg.image_url} 
-                      alt="uploaded" 
-                      className="mt-2 rounded-lg max-w-full h-auto border border-white/10"
-                    />
-                  )}
-                </div>
-                <div className="flex items-center gap-2 px-1 text-[10px] uppercase tracking-widest text-white/30 font-medium">
-                  {msg.role === "user" ? (
-                    <>You <User className="w-3 h-3" /></>
-                  ) : (
-                    <><Bot className="w-3 h-3" /> Bot</>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-white/5 border border-white/10 px-4 py-3 rounded-2xl flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-white/40" />
-              <span className="text-xs text-white/40 font-medium italic">Thinking...</span>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Input Area */}
-      <footer className="p-6 border-t border-white/10 bg-black/50 backdrop-blur-xl">
-        <div className="max-w-4xl mx-auto relative">
-          {image && (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="absolute -top-24 left-0 p-2 bg-white/10 rounded-xl border border-white/20 backdrop-blur-md"
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowInsights(!showInsights)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${
+                showInsights 
+                  ? "bg-white/10 border-white/20 text-white" 
+                  : "bg-transparent border-white/10 text-white/60 hover:text-white"
+              }`}
             >
-              <img src={image} alt="preview" className="h-16 w-16 object-cover rounded-lg" />
-              <button 
-                onClick={() => setImage(null)}
-                className="absolute -top-2 -right-2 bg-red-500 rounded-full p-1 shadow-lg"
-              >
-                <X className="w-3 h-3 text-white" />
-              </button>
-            </motion.div>
-          )}
-
-          <div className="relative flex items-center gap-2 bg-white/5 border border-white/10 rounded-2xl px-4 py-2 focus-within:border-white/30 transition-all shadow-2xl">
-            <button 
-              onClick={() => fileInputRef.current?.click()}
-              className="p-2 text-white/40 hover:text-white transition-colors"
-            >
-              <ImageIcon className="w-5 h-5" />
-            </button>
-            <input 
-              type="file" 
-              hidden 
-              ref={fileInputRef} 
-              accept="image/*"
-              onChange={handleImageUpload}
-            />
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && handleSend()}
-              placeholder="Type your message..."
-              className="flex-1 bg-transparent border-none focus:ring-0 text-sm py-2 placeholder:text-white/20"
-            />
-            <button 
-              onClick={handleSend}
-              disabled={isLoading || (!input.trim() && !image)}
-              className="p-2 bg-white text-black rounded-xl disabled:opacity-30 disabled:grayscale transition-all hover:scale-105 active:scale-95"
-            >
-              <Send className="w-4 h-4" />
+              <Database className="w-3.5 h-3.5" />
+              AI Insights
             </button>
           </div>
+        </header>
+
+        {/* Messages & Conversation Area */}
+        <div 
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto px-6 py-8 space-y-6 scrollbar-thin"
+        >
+          <AnimatePresence initial={false}>
+            {messages.length === 0 && (
+              <motion.div 
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex flex-col items-center justify-center min-h-[75%] max-w-2xl mx-auto text-center px-4 space-y-8"
+              >
+                <div className="relative">
+                  <div className="absolute inset-0 bg-indigo-500/10 blur-3xl rounded-full" />
+                  <div className="relative w-16 h-16 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-center mx-auto shadow-2xl backdrop-blur-xl">
+                    <Sparkles className="w-7 h-7 text-indigo-400 animate-pulse" />
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h2 className="text-2xl font-semibold tracking-tight text-gradient">Welcome to Acme Support</h2>
+                  <p className="text-sm text-white/50 max-w-md mx-auto leading-relaxed">
+                    Ask me any question about the **SuperWidget 3000**, shipping specifications, or return procedures. I search our corporate knowledge base in real-time.
+                  </p>
+                </div>
+
+                {/* Suggested Prompts Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full pt-4">
+                  {SUGGESTED_PROMPTS.map((item, idx) => (
+                    <motion.div
+                      key={idx}
+                      whileHover={{ y: -4, scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => handleSend(item.prompt)}
+                      className="cursor-pointer p-4 rounded-xl bg-white/5 border border-white/10 text-left hover:bg-white/10 hover:border-white/20 transition-all shadow-xl group backdrop-blur-md"
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">{item.category}</span>
+                        <ArrowRight className="w-3.5 h-3.5 text-white/20 group-hover:text-white transition-colors" />
+                      </div>
+                      <h3 className="text-xs font-semibold text-white/90 group-hover:text-white mb-1">{item.title}</h3>
+                      <p className="text-[11px] text-white/40 leading-snug">{item.desc}</p>
+                    </motion.div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
+            {messages.map((msg, idx) => (
+              <motion.div
+                key={idx}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: "spring", stiffness: 300, damping: 25 }}
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} max-w-4xl mx-auto`}
+              >
+                <div className={`flex gap-3 max-w-[85%] ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
+                  
+                  {/* Avatar */}
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-lg ${
+                    msg.role === "user" 
+                      ? "bg-white/10 border border-white/10 text-white" 
+                      : "bg-gradient-to-tr from-violet-600 to-indigo-600 text-white"
+                  }`}>
+                    {msg.role === "user" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                  </div>
+
+                  {/* Message Bubble */}
+                  <div className="flex flex-col gap-1">
+                    <div className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+                      msg.role === "user" 
+                        ? "bg-white text-black shadow-xl rounded-tr-none" 
+                        : "bg-white/5 border border-white/10 text-white/90 rounded-tl-none shadow-2xl backdrop-blur-md"
+                    }`}>
+                      {msg.content && <div className="space-y-1">{formatMessageContent(msg.content)}</div>}
+                      {msg.image_url && (
+                        <div className="mt-2.5 overflow-hidden rounded-xl border border-white/10">
+                          <img 
+                            src={msg.image_url} 
+                            alt="Uploaded issue screenshot" 
+                            className="max-h-60 w-auto object-cover hover:scale-105 transition-all"
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-white/30 tracking-wider uppercase font-semibold px-2">
+                      {msg.role === "user" ? "You" : "Acme Copilot"}
+                    </span>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+
+          {isLoading && (
+            <div className="flex justify-start max-w-4xl mx-auto">
+              <div className="flex gap-3 max-w-[80%]">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center shrink-0 shadow-lg">
+                  <Bot className="w-4 h-4 text-white" />
+                </div>
+                <div className="bg-white/5 border border-white/10 px-4 py-3 rounded-2xl rounded-tl-none flex items-center gap-2.5 backdrop-blur-md shadow-xl">
+                  <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                  <span className="text-xs text-white/40 font-medium italic">Searching context & thinking...</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      </footer>
+
+        {/* Bottom Inputs Area */}
+        <footer className="p-6 border-t border-white/10 bg-black/40 backdrop-blur-xl z-20">
+          <div className="max-w-4xl mx-auto relative">
+            
+            {/* Image Preview Floating Banner */}
+            {image && (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="absolute -top-24 left-0 p-2 bg-white/10 rounded-xl border border-white/20 backdrop-blur-md shadow-2xl flex items-center gap-2"
+              >
+                <img src={image} alt="Upload Preview" className="h-16 w-16 object-cover rounded-lg" />
+                <button 
+                  onClick={() => setImage(null)}
+                  className="bg-black/80 hover:bg-black rounded-full p-1.5 shadow-lg transition-colors border border-white/10"
+                >
+                  <X className="w-3 h-3 text-white" />
+                </button>
+              </motion.div>
+            )}
+
+            {/* Input Box */}
+            <div className="relative flex items-center gap-2 bg-white/5 border border-white/10 rounded-2xl px-4 py-2 focus-within:border-indigo-500/50 focus-within:bg-white/10 transition-all shadow-2xl backdrop-blur-md">
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 text-white/40 hover:text-white transition-colors"
+                title="Upload screenshot of your issue"
+              >
+                <ImageIcon className="w-5 h-5" />
+              </button>
+              <input 
+                type="file" 
+                hidden 
+                ref={fileInputRef} 
+                accept="image/*"
+                onChange={handleImageUpload}
+              />
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyPress={(e) => e.key === "Enter" && handleSend()}
+                placeholder="Ask about SuperWidget specifications, free shipping limit..."
+                className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-sm py-2.5 placeholder:text-white/25"
+              />
+              <button 
+                onClick={() => handleSend()}
+                disabled={isLoading || (!input.trim() && !image)}
+                className="p-2.5 bg-white hover:bg-white/90 text-black rounded-xl disabled:opacity-30 disabled:hover:bg-white transition-all hover:scale-105 active:scale-95 glow-btn cursor-pointer shadow-lg shadow-white/5 flex items-center justify-center shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </footer>
+      </div>
+
+      {/* Right AI & RAG Insights Drawer */}
+      <AnimatePresence>
+        {showInsights && (
+          <motion.div
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 340, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            className="hidden lg:flex flex-col h-full bg-black/60 backdrop-blur-2xl border-l border-white/10 z-10 overflow-hidden"
+          >
+            <div className="p-6 border-b border-white/10 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-sm font-semibold text-gradient">RAG & Model Insights</h2>
+              </div>
+              <button 
+                onClick={() => setShowInsights(false)}
+                className="p-1 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              
+              {/* Active LLM and Embeddings info */}
+              <div className="space-y-4">
+                <h3 className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Active Models</h3>
+                
+                <div className="p-4 rounded-xl bg-white/5 border border-white/5 space-y-3">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-white/40">LLM Model</span>
+                    <span className="bg-indigo-500/10 text-indigo-300 px-2 py-0.5 rounded text-[10px] font-mono border border-indigo-500/20">GPT-4o</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-white/40">Embedding Model</span>
+                    <span className="bg-violet-500/10 text-violet-300 px-2 py-0.5 rounded text-[10px] font-mono border border-violet-500/20">Text-Embedding-3</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-white/40">Vector Database</span>
+                    <span className="text-white/80 font-mono text-[10px]">ChromaDB</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* RAG Parameters */}
+              <div className="space-y-4">
+                <h3 className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Database State</h3>
+                
+                <div className="p-4 rounded-xl bg-white/5 border border-white/5 space-y-3.5">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-white/40">KB Collection</span>
+                      <span className="text-white/90 text-xs font-mono">customer_support_kb</span>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-white/40">Search Strategy</span>
+                      <span className="text-white/90 text-xs font-medium">Similarity (k=3)</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-white/40">Source Count</span>
+                      <span className="text-emerald-400 font-bold text-xs">1 Active File</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Verified Sources */}
+              <div className="space-y-4">
+                <h3 className="text-[10px] font-bold text-white/30 uppercase tracking-widest">Active Knowledge Base</h3>
+                <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10 flex items-start gap-3">
+                  <HelpCircle className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-semibold text-emerald-300">company_info.txt</h4>
+                    <p className="text-[10px] text-white/40 leading-relaxed">
+                      Contains official returns policies, SuperWidget troubleshooting protocols, and free shipping requirements.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <div className="p-6 border-t border-white/10 bg-black/40">
+              <div className="flex items-center gap-2 text-xs text-white/40">
+                <Shield className="w-3.5 h-3.5" />
+                Security Layer Active
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
