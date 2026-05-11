@@ -76,20 +76,83 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      const response = await axios.post(`${API_URL}/chat`, {
-        messages: [...messages, newMessage].map((m) => ({
-          role: m.role,
-          content: m.content,
-          image_url: m.image_url,
-        })),
+      // 1. Initialize an empty assistant message to show loading state immediately
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "" },
+      ]);
+
+      // 2. Initiate the stream fetch
+      const response = await fetch(`${API_URL}/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...messages, newMessage].map((m) => ({
+            role: m.role,
+            content: m.content,
+            image_url: m.image_url,
+          })),
+        }),
       });
 
-      const botMessage: Message = {
-        role: "assistant",
-        content: response.data.response,
-      };
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status}`);
+      }
 
-      setMessages((prev) => [...prev, botMessage]);
+      if (!response.body) {
+        throw new Error("No readable stream found in response body.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      
+      let isDone = false;
+      let streamBuffer = "";
+
+      while (!isDone) {
+        const { value, done } = await reader.read();
+        isDone = done;
+
+        if (value) {
+          streamBuffer += decoder.decode(value, { stream: true });
+          
+          // Process the stream buffer looking for complete SSE data blocks (separated by double newlines)
+          let eventBoundary = streamBuffer.indexOf("\n\n");
+          
+          while (eventBoundary !== -1) {
+            const payload = streamBuffer.slice(0, eventBoundary).trim();
+            streamBuffer = streamBuffer.slice(eventBoundary + 2);
+
+            if (payload.startsWith("data: ")) {
+              try {
+                const dataStr = payload.slice(6);
+                const parsed = JSON.parse(dataStr);
+
+                if (parsed.token) {
+                  // Update the LAST message array iteratively using React's setter callback
+                  setMessages((prev) => {
+                    const updatedMessages = [...prev];
+                    const finalIdx = updatedMessages.length - 1;
+                    
+                    if (finalIdx >= 0 && updatedMessages[finalIdx].role === "assistant") {
+                      updatedMessages[finalIdx] = {
+                        ...updatedMessages[finalIdx],
+                        content: updatedMessages[finalIdx].content + parsed.token,
+                      };
+                    }
+                    return updatedMessages;
+                  });
+                } else if (parsed.error) {
+                  throw new Error(parsed.error);
+                }
+              } catch (e) {
+                console.error("Failed to parse SSE chunk:", e);
+              }
+            }
+            eventBoundary = streamBuffer.indexOf("\n\n");
+          }
+        }
+      }
     } catch (error) {
       console.error("Chat Error:", error);
       setMessages((prev) => [
