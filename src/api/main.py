@@ -1,6 +1,8 @@
+import json
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, AsyncGenerator
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from src.graph.workflow import support_bot_graph
 from src.database.vector_store import vector_store_manager
@@ -87,6 +89,34 @@ async def startup_event():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "model": settings.MODEL_NAME}
+
+async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
+    """Generates SSE chunks from LangGraph event execution."""
+    try:
+        # Convert history to LangChain messages
+        messages = convert_to_langchain_messages(request.messages)
+        
+        # Prepare state
+        state = {"messages": messages}
+        
+        async for event in support_bot_graph.astream_events(state, version="v2"):
+            # Intercept actual generated tokens from the model
+            if event["event"] == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                if hasattr(chunk, "content") and chunk.content:
+                    # Emit chunk serialized as JSON formatted SSE data
+                    yield f"data: {json.dumps({'token': chunk.content})}\n\n"
+                    
+    except Exception as e:
+        # Emit graceful error block via SSE
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    Streaming chat endpoint. Streams bot response token-by-token using SSE.
+    """
+    return StreamingResponse(event_generator(request), media_type="text/event-stream")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):

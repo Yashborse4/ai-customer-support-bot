@@ -11,7 +11,8 @@ def get_support_model():
     model = ChatOpenAI(
         model=settings.MODEL_NAME,
         api_key=settings.OPENAI_API_KEY,
-        temperature=0
+        temperature=0,
+        streaming=True
     )
     return model.bind_tools([retrieve_company_info])
 
@@ -34,7 +35,8 @@ async def support_agent_node(state: SupportState):
     model = ChatOpenAI(
         model="gpt-4o",
         api_key=settings.OPENAI_API_KEY,
-        temperature=0
+        temperature=0,
+        streaming=True
     ).bind_tools([retrieve_company_info])
     
     chain = prompt | model
