@@ -1,18 +1,32 @@
+from contextlib import asynccontextmanager
 import json
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from src.graph.workflow import support_bot_graph
 from src.database.vector_store import vector_store_manager
 from src.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Lifespan context manager that handles startup and shutdown operations.
+
+    Args:
+        app: The FastAPI application instance.
+    """
+    print("Indexing documents for API...")
+    vector_store_manager.load_and_index_documents("data")
+    print("Indexing complete.")
+    yield
+
 app = FastAPI(
     title="Acme Corp Support Bot API",
     description="REST API for the RAG-supported AI Customer Support Bot",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS configuration
@@ -38,7 +52,14 @@ class ChatResponse(BaseModel):
     history: List[ChatMessage]
 
 def convert_to_langchain_messages(messages: List[ChatMessage]) -> List[BaseMessage]:
-    """Converts API message format to LangChain format."""
+    """Converts API message format to LangChain message format.
+
+    Args:
+        messages: A list of ChatMessage request objects.
+
+    Returns:
+        A list of LangChain BaseMessage objects (HumanMessage or AIMessage).
+    """
     lc_messages = []
     for msg in messages:
         if msg.role == "user":
@@ -58,7 +79,14 @@ def convert_to_langchain_messages(messages: List[ChatMessage]) -> List[BaseMessa
     return lc_messages
 
 def convert_to_api_messages(lc_messages: List[BaseMessage]) -> List[ChatMessage]:
-    """Converts LangChain message format to API format."""
+    """Converts LangChain message format to API message format.
+
+    Args:
+        lc_messages: A list of LangChain BaseMessage objects.
+
+    Returns:
+        A list of ChatMessage response objects.
+    """
     api_messages = []
     for msg in lc_messages:
         role = "user" if isinstance(msg, HumanMessage) else "assistant"
@@ -78,20 +106,24 @@ def convert_to_api_messages(lc_messages: List[BaseMessage]) -> List[ChatMessage]
         api_messages.append(ChatMessage(role=role, content=content, image_url=image_url))
     return api_messages
 
-@app.on_event("startup")
-async def startup_event():
-    """Initializes RAG on startup."""
-    print("Indexing documents for API...")
-    vector_store_manager.load_and_index_documents("data")
-    print("Indexing complete.")
-
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
+async def health_check() -> Dict[str, str]:
+    """Health check endpoint.
+
+    Returns:
+        A dictionary containing the status of the server and the LLM model name used.
+    """
     return {"status": "healthy", "model": settings.MODEL_NAME}
 
 async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
-    """Generates SSE chunks from LangGraph event execution."""
+    """Generates server-sent event (SSE) chunks from LangGraph token execution.
+
+    Args:
+        request: The ChatRequest message history.
+
+    Yields:
+        JSON string representation of tokens generated or errors encountered.
+    """
     try:
         # Convert history to LangChain messages
         messages = convert_to_langchain_messages(request.messages)
@@ -112,16 +144,29 @@ async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    """
-    Streaming chat endpoint. Streams bot response token-by-token using SSE.
+async def chat_stream(request: ChatRequest) -> StreamingResponse:
+    """Streaming chat endpoint. Streams bot response token-by-token using SSE.
+
+    Args:
+        request: The ChatRequest payload containing conversation history.
+
+    Returns:
+        A FastAPI StreamingResponse carrying the real-time token stream.
     """
     return StreamingResponse(event_generator(request), media_type="text/event-stream")
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """
-    Main chat endpoint. Processes conversation history and returns a response.
+async def chat(request: ChatRequest) -> ChatResponse:
+    """Main chat endpoint. Processes conversation history and returns a standard response.
+
+    Args:
+        request: The ChatRequest payload containing conversation history.
+
+    Returns:
+        A ChatResponse instance containing the assistant's response and updated history.
+
+    Raises:
+        HTTPException: Internal server error if processing fails.
     """
     try:
         # Convert history to LangChain messages
@@ -145,8 +190,15 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/index")
-async def reindex_documents():
-    """Manually triggers document re-indexing."""
+async def reindex_documents() -> Dict[str, str]:
+    """Manually triggers document re-indexing from the 'data/' directory.
+
+    Returns:
+        A success message indicating document indexing status.
+
+    Raises:
+        HTTPException: Internal server error if indexing fails.
+    """
     try:
         vector_store_manager.load_and_index_documents("data")
         return {"status": "success", "message": "Documents re-indexed successfully."}

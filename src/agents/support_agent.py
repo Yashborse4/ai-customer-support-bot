@@ -1,12 +1,16 @@
+from typing import Any, Dict
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import Runnable
 from src.core.config import settings
 from src.tools.retrieval_tool import retrieve_company_info
 from src.schemas.state import SupportState
 
-def get_support_model():
-    """
-    Returns the ChatOpenAI model bound with tools.
+def get_support_model() -> Runnable[Any, Any]:
+    """Returns the ChatOpenAI model bound with retrieval tools.
+
+    Returns:
+        A LangChain Runnable model instance bound with the `retrieve_company_info` tool.
     """
     model = ChatOpenAI(
         model=settings.MODEL_NAME,
@@ -16,10 +20,16 @@ def get_support_model():
     )
     return model.bind_tools([retrieve_company_info])
 
-async def support_agent_node(state: SupportState):
-    """
-    Node that processes the current state and generates a response or tool call.
-    Supports multi-modal content (text and images).
+async def support_agent_node(state: SupportState) -> Dict[str, Any]:
+    """Processes the current conversation state and generates an assistant response or tool call.
+
+    Supports multi-modal content (text and image-based screenshots).
+
+    Args:
+        state: The current SupportState representing the conversation history.
+
+    Returns:
+        A dictionary containing the generated AIMessage to be appended to the state.
     """
     prompt = ChatPromptTemplate.from_messages([
         ("system", (

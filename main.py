@@ -5,10 +5,8 @@ from langchain_core.messages import HumanMessage
 from src.database.vector_store import vector_store_manager
 from src.graph.workflow import support_bot_graph
 
-async def main():
-    """
-    Main entry point for the AI Customer Support Bot.
-    """
+async def main() -> None:
+    """Main CLI entry point for the interactive Acme Corp AI Customer Support Bot."""
     # Load environment variables
     load_dotenv()
 

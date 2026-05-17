@@ -1,12 +1,19 @@
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, START
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import MemorySaver
 from src.schemas.state import SupportState
 from src.agents.support_agent import support_agent_node
 from src.tools.retrieval_tool import retrieve_company_info
 
-def create_workflow():
-    """
-    Creates and compiles the LangGraph workflow for the support bot.
+def create_workflow() -> CompiledStateGraph:
+    """Creates and compiles the LangGraph workflow for the support bot.
+
+    This workflow orchestrates the support agent node and handles tool execution
+    seamlessly with checkpointer-based conversation state persistence.
+
+    Returns:
+        The compiled stateful LangGraph workflow ready for execution.
     """
     # Initialize the graph with our state schema
     workflow = StateGraph(SupportState)
@@ -30,8 +37,11 @@ def create_workflow():
     # After tools are executed, go back to the agent to summarize/answer
     workflow.add_edge("tools", "agent")
 
-    # Compile the graph
-    return workflow.compile()
+    # Initialize MemorySaver checkpointer for state preservation
+    checkpointer = MemorySaver()
+
+    # Compile the graph with the checkpointer
+    return workflow.compile(checkpointer=checkpointer)
 
 # Singleton instance of the compiled graph
-support_bot_graph = create_workflow()
+support_bot_graph: CompiledStateGraph = create_workflow()
