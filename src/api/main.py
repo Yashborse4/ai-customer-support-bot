@@ -46,6 +46,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
+    thread_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -128,10 +129,11 @@ async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
         # Convert history to LangChain messages
         messages = convert_to_langchain_messages(request.messages)
         
-        # Prepare state
+        # Prepare state and checkpointer config
         state = {"messages": messages}
+        config = {"configurable": {"thread_id": request.thread_id or "default-session"}}
         
-        async for event in support_bot_graph.astream_events(state, version="v2"):
+        async for event in support_bot_graph.astream_events(state, config=config, version="v2"):
             # Intercept actual generated tokens from the model
             if event["event"] == "on_chat_model_stream":
                 chunk = event["data"]["chunk"]
@@ -172,11 +174,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Convert history to LangChain messages
         messages = convert_to_langchain_messages(request.messages)
         
-        # Prepare state
+        # Prepare state and checkpointer config
         state = {"messages": messages}
+        config = {"configurable": {"thread_id": request.thread_id or "default-session"}}
         
         # Invoke LangGraph
-        result = await support_bot_graph.ainvoke(state)
+        result = await support_bot_graph.ainvoke(state, config=config)
         
         # Extract last message and updated history
         updated_lc_messages = result["messages"]
