@@ -17,3 +17,9 @@ build/
 node_modules/
 dist/
 .DS_Store
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
