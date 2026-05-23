@@ -13,14 +13,17 @@ graph TD
     B -->|Query / Retrieve| C[ChromaDB Vector Store]
     B -->|Checkpointer Persistence| D[MemorySaver Checkpoints]
     B -->|LLM & Vision Bindings| E[OpenAI GPT-4o]
+    B -->|SQL Queries| G[SQLite Relational DB]
     C -->|Indexes| F[PDF & TXT Knowledge Base]
 ```
 
 ### Core Execution Flow
 1. **RAG Ingestion**: On server start, company documentation (PDFs and Text files in `data/`) are split and indexed into a local ChromaDB vector database using OpenAI's `text-embedding-3-small` model.
-2. **Stateful Conversation**: LangGraph maintains the support assistant's state, orchestrating conditional routing. If a customer query demands company specifics (products, shipping, returns, technical policies), the agent invokes a retrieval tool to fetch grounded knowledge.
-3. **Multi-Modal Vision**: If a customer uploads a screenshot of an error, the backend routes the base64-encoded image directly to `gpt-4o` to analyze the error visually and provide instant debugging steps.
-4. **Real-time Streaming**: Model responses are streamed back to the Next.js client token-by-token using HTTP Server-Sent Events (SSE), reducing Time-to-First-Token (TTFT) and providing a premium, fluid user experience.
+2. **Relational Database Queries (SQL Agent)**: Integrates a SQLite database containing transaction, customer profiles, shipping tracking, returns, and support ticket records. A LangChain SQL Agent queries this relational data using natural language.
+3. **Table Selector & Router**: Dynamically matches user queries against table descriptions to load only relevant schemas into the SQL database context, preventing LLM prompt clutter when scaling to a high number of tables.
+4. **Stateful Conversation**: LangGraph maintains the support assistant's state, orchestrating conditional routing. If a customer query demands company specifics (products, shipping, returns, technical policies), the agent invokes a retrieval tool to fetch grounded knowledge.
+5. **Multi-Modal Vision**: If a customer uploads a screenshot of an error, the backend routes the base64-encoded image directly to `gpt-4o` to analyze the error visually and provide instant debugging steps.
+6. **Real-time Streaming**: Model responses are streamed back to the Next.js client token-by-token using HTTP Server-Sent Events (SSE), reducing Time-to-First-Token (TTFT) and providing a premium, fluid user experience.
 
 ---
 
@@ -30,7 +33,9 @@ graph TD
 * **API Framework**: [FastAPI](https://fastapi.tiangolo.com/) (using asynchronous endpoints & Lifespan managers)
 * **Agentic Orchestration**: [LangGraph](https://github.com/langchain-ai/langgraph) (featuring `MemorySaver` thread checkpoints)
 * **LLM Engine**: [LangChain OpenAI](https://github.com/langchain-ai/langchain) (integrating GPT-4o and OpenAI Embeddings)
+* **SQL Agent Toolkit**: LangChain `SQLDatabase` and `create_sql_agent`
 * **Vector Database**: [ChromaDB](https://github.com/chroma-core/chroma) (local persistent storage)
+* **Relational Database**: [SQLite](https://sqlite.org/) with [SQLAlchemy](https://www.sqlalchemy.org/) ORM
 * **Document Loaders**: `PyPDFLoader` and `TextLoader` via `langchain-community`
 
 ### Frontend Interface
@@ -43,10 +48,12 @@ graph TD
 
 ## ✨ Features
 
-* **Retrieval-Augmented Generation (RAG)**: Automatically searches and retrieves company documentation to grounding replies.
+* **Retrieval-Augmented Generation (RAG)**: Automatically searches and retrieves company documentation to ground replies.
+* **LangChain SQL Agent**: Automatically writes, verifies, and executes SQL queries to fetch structured order details, tracking status, support tickets, and inventory levels.
+* **Dynamic Table Routing**: Semantic routing filters and groups tables for the SQL Agent based on user query intent, preventing prompt bloat and schema confusion.
 * **Server-Sent Events (SSE) Streaming**: Token-by-token text generation rendering in real-time.
 * **Multi-Modal Support**: Allows customers to attach error screenshots alongside their questions.
-* **Stateful Tool Calling**: Agent decides when to search the knowledge base using native LangGraph conditional edges.
+* **Stateful Tool Calling**: Agent decides when to search the knowledge base or query relational tables using native LangGraph conditional edges.
 * **Docker Containerization**: Multi-stage Docker configurations for both development and production deployment.
 
 ---
@@ -103,7 +110,7 @@ graph TD
 
 3. Place company documentation (e.g., PDFs, TXT files) inside the `data/` directory.
 
-4. Run the API server:
+4. Run the API server (will automatically initialize the relational SQLite database on startup):
    ```bash
    uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
@@ -129,6 +136,7 @@ The codebase includes an extensive unit and integration test suite (fully typed,
 
 To run tests:
 ```bash
+$env:PYTHONPATH="."
 python -m pytest
 ```
 
@@ -138,6 +146,8 @@ python -m pytest
 
 - [x] Complete Multi-modal query integration (Vision analysis for error screenshots).
 - [x] Robust PDF and Text indexing system.
+- [x] Integrate Relational Database (SQLite) with LangChain SQL Agent tool.
+- [x] Implement Dynamic Table Selection & Routing for large schemas.
 - [x] State-of-the-art token streaming architecture (SSE) for low Time-to-First-Token (TTFT).
 - [x] Premium Next.js interactive frontend with RAG insights.
 - [ ] Integration with Slack and Discord channels.
