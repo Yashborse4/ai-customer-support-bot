@@ -5,6 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from src.schemas.state import SupportState
 from src.agents.support_agent import support_agent_node
 from src.tools.retrieval_tool import retrieve_company_info
+from src.tools.sql_tool import query_customer_database
 
 def create_workflow() -> CompiledStateGraph:
     """Creates and compiles the LangGraph workflow for the support bot.
@@ -22,7 +23,7 @@ def create_workflow() -> CompiledStateGraph:
     workflow.add_node("agent", support_agent_node)
     
     # Prebuilt ToolNode to handle tool execution
-    tool_node = ToolNode([retrieve_company_info])
+    tool_node = ToolNode([retrieve_company_info, query_customer_database])
     workflow.add_node("tools", tool_node)
 
     # Define the edges

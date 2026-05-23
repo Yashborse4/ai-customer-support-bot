@@ -7,6 +7,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from src.graph.workflow import support_bot_graph
 from src.database.vector_store import vector_store_manager
+from src.database.sql_db import initialize_database
 from src.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,6 +18,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Args:
         app: The FastAPI application instance.
     """
+    print("Initializing SQL Database...")
+    initialize_database()
+    print("SQL Database ready.")
+    
     print("Indexing documents for API...")
     vector_store_manager.load_and_index_documents("data")
     print("Indexing complete.")
