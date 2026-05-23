@@ -13,21 +13,13 @@ def get_support_model() -> Runnable[Any, Any]:
     Returns:
         A LangChain Runnable model instance bound with retrieve_company_info and query_customer_database.
     """
-    if settings.LLM_PROVIDER.lower() == "local":
-        model = ChatOpenAI(
-            model=settings.LOCAL_MODEL_NAME,
-            base_url=settings.LOCAL_LLM_BASE_URL,
-            api_key="local-placeholder",
-            temperature=0,
-            streaming=True
-        )
-    else:
-        model = ChatOpenAI(
-            model=settings.MODEL_NAME,
-            api_key=settings.OPENAI_API_KEY,
-            temperature=0,
-            streaming=True
-        )
+    model = ChatOpenAI(
+        model=settings.MODEL_NAME,
+        base_url=settings.LOCAL_LLM_BASE_URL,
+        api_key="local-placeholder",
+        temperature=0,
+        streaming=True
+    )
     return model.bind_tools([retrieve_company_info, query_customer_database])
 
 async def support_agent_node(state: SupportState) -> Dict[str, Any]:
@@ -54,22 +46,14 @@ async def support_agent_node(state: SupportState) -> Dict[str, Any]:
         MessagesPlaceholder(variable_name="messages"),
     ])
     
-    # Select LLM based on provider settings
-    if settings.LLM_PROVIDER.lower() == "local":
-        model = ChatOpenAI(
-            model=settings.LOCAL_MODEL_NAME,
-            base_url=settings.LOCAL_LLM_BASE_URL,
-            api_key="local-placeholder",
-            temperature=0,
-            streaming=True
-        )
-    else:
-        model = ChatOpenAI(
-            model="gpt-4o",
-            api_key=settings.OPENAI_API_KEY,
-            temperature=0,
-            streaming=True
-        )
+    # Initialize the local LLM
+    model = ChatOpenAI(
+        model=settings.MODEL_NAME,
+        base_url=settings.LOCAL_LLM_BASE_URL,
+        api_key="local-placeholder",
+        temperature=0,
+        streaming=True
+    )
     
     model = model.bind_tools([retrieve_company_info, query_customer_database])
     

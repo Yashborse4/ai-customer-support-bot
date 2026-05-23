@@ -3,7 +3,7 @@ from src.core.config import settings
 
 def test_config_loading():
     """Verify that settings are initialized (even if env is missing, defaults should exist)."""
-    assert settings.MODEL_NAME == "gpt-4o"
+    assert isinstance(settings.MODEL_NAME, str) and len(settings.MODEL_NAME) > 0
     assert settings.COLLECTION_NAME == "customer_support_kb"
 
 def test_retrieval_tool_docstring():

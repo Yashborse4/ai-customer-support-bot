@@ -3,22 +3,17 @@ from typing import Optional
 
 class Settings(BaseSettings):
     """
-    Application settings and environment variables.
+    Application settings and environment variables for local-first operations.
     """
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # OpenAI Configuration
-    OPENAI_API_KEY: Optional[str] = None
-    
-    # Provider Settings
-    LLM_PROVIDER: str = "openai" # "openai" or "local"
-    EMBEDDING_PROVIDER: str = "openai" # "openai" or "local"
-    
-    # Local Offline Model Configuration (Ollama / LocalAI / LM Studio)
+    # Local Offline Connection Configurations (Ollama / LocalAI / LM Studio)
     LOCAL_LLM_BASE_URL: str = "http://localhost:11434/v1"
-    LOCAL_MODEL_NAME: str = "llama3"
     LOCAL_EMBEDDING_BASE_URL: str = "http://localhost:11434/v1"
-    LOCAL_EMBEDDING_MODEL: str = "nomic-embed-text"
+
+    # Swappable Model Identifiers
+    MODEL_NAME: str = "qwen2.5"
+    EMBEDDING_MODEL: str = "nomic-embed-text"
     
     # Vector Store Configuration
     PERSIST_DIRECTORY: str = "./chroma_db"
@@ -28,10 +23,6 @@ class Settings(BaseSettings):
     QDRANT_URL: Optional[str] = None
     FAISS_INDEX_PATH: str = "./faiss_db"
     SQL_DATABASE_PATH: str = "data/support_records.db"
-
-    # Model Configuration (OpenAI Defaults)
-    MODEL_NAME: str = "gpt-4o"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # Logging
     LOG_LEVEL: str = "INFO"

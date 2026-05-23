@@ -29,18 +29,12 @@ class VectorStoreManager:
     """
 
     def __init__(self) -> None:
-        """Initializes the VectorStoreManager with embeddings based on the active provider."""
-        if settings.EMBEDDING_PROVIDER.lower() == "local":
-            self.embeddings = OpenAIEmbeddings(
-                api_key="local-placeholder",
-                model=settings.LOCAL_EMBEDDING_MODEL,
-                openai_api_base=settings.LOCAL_EMBEDDING_BASE_URL
-            )
-        else:
-            self.embeddings = OpenAIEmbeddings(
-                api_key=settings.OPENAI_API_KEY,
-                model=settings.EMBEDDING_MODEL
-            )
+        """Initializes the VectorStoreManager with the local embeddings model."""
+        self.embeddings = OpenAIEmbeddings(
+            api_key="local-placeholder",
+            model=settings.EMBEDDING_MODEL,
+            openai_api_base=settings.LOCAL_EMBEDDING_BASE_URL
+        )
         self.vector_store: Optional[VectorStore] = None
 
     def _initialize_store(self, documents: Optional[List[Document]] = None) -> VectorStore:

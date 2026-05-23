@@ -27,19 +27,12 @@ async def query_customer_database(query: str, department: str = "general") -> st
     """
     db = get_db_for_query(query, department=department)
     
-    if settings.LLM_PROVIDER.lower() == "local":
-        llm = ChatOpenAI(
-            model=settings.LOCAL_MODEL_NAME,
-            base_url=settings.LOCAL_LLM_BASE_URL,
-            api_key="local-placeholder",
-            temperature=0
-        )
-    else:
-        llm = ChatOpenAI(
-            model=settings.MODEL_NAME,
-            api_key=settings.OPENAI_API_KEY,
-            temperature=0
-        )
+    llm = ChatOpenAI(
+        model=settings.MODEL_NAME,
+        base_url=settings.LOCAL_LLM_BASE_URL,
+        api_key="local-placeholder",
+        temperature=0
+    )
     
     agent_executor = create_sql_agent(
         llm=llm,
