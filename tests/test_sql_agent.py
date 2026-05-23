@@ -51,6 +51,24 @@ def test_table_selection_routing() -> None:
     assert "products" in tables_default
     assert "shipping" not in tables_default
 
+def test_department_segregation() -> None:
+    """Verify that get_db_for_query restricts database scopes by department."""
+    # Technical department should only see products and support tickets
+    db_tech = get_db_for_query("Show me Alice's orders and tickets", department="technical")
+    tables_tech = db_tech.get_usable_table_names()
+    assert "support_tickets" in tables_tech
+    assert "products" in tables_tech
+    assert "orders" not in tables_tech
+    assert "customers" not in tables_tech
+
+    # Billing department should only see customers, orders, and returns
+    db_billing = get_db_for_query("Show me Bob's orders and shipping status", department="billing")
+    tables_billing = db_billing.get_usable_table_names()
+    assert "orders" in tables_billing
+    assert "customers" in tables_billing
+    assert "returns" in tables_billing
+    assert "shipping" not in tables_billing
+
 from unittest.mock import patch, MagicMock, AsyncMock
 
 @pytest.mark.asyncio

@@ -9,7 +9,9 @@ class SupportState(TypedDict):
         messages: The list of messages in the conversation (statefully appended).
         customer_id: Optional tracker for identifying the customer.
         query_category: Optional label for classification of the conversation query.
+        department: Optional label for the department scope of the conversation.
     """
     messages: Annotated[Sequence[BaseMessage], add_messages]
     customer_id: NotRequired[str]
     query_category: NotRequired[str]
+    department: NotRequired[str]

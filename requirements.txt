@@ -13,7 +13,14 @@ fastapi
 uvicorn
 gunicorn
 python-multipart
+pandas
+openpyxl
+docx2txt
+
 docling
 qdrant-client
 faiss-cpu
 langchain-qdrant
+pandas
+openpyxl
+docx2txt

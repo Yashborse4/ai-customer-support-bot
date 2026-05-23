@@ -7,7 +7,7 @@ filter database tables for LangChain SQL agents to handle large schemas.
 import logging
 import os
 import sqlite3
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 from langchain_community.utilities.sql_database import SQLDatabase
 from src.core.config import settings
 
@@ -186,16 +186,23 @@ def initialize_database() -> None:
     finally:
         conn.close()
 
-def get_db_for_query(query: str) -> SQLDatabase:
+# Allowed tables scoped per department to satisfy enterprise segregation requirements.
+DEPARTMENT_TABLE_SCOPES: Dict[str, Set[str]] = {
+    "sales": {"customers", "orders", "products", "shipping"},
+    "technical": {"products", "support_tickets"},
+    "billing": {"customers", "orders", "returns"},
+    "general": {"customers", "orders", "products", "support_tickets", "returns", "shipping"}
+}
+
+def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabase:
     """Selects relevant tables for a given query and returns a SQLDatabase instance.
 
     This implements table grouping/routing to avoid overwhelming the LLM context.
-    If a query targets specific topics (e.g. returns, orders), only the tables
-    associated with those concepts are loaded. If no specific tables match,
-    a core default group (customers, orders, products) is used.
+    It filters the allowed tables based on the user's department for access control.
 
     Args:
         query: User's question or search query.
+        department: Optional department name to restrict database scopes.
 
     Returns:
         An initialized LangChain SQLDatabase instance with filtered tables.
@@ -252,8 +259,17 @@ def get_db_for_query(query: str) -> SQLDatabase:
         selected_tables.add("customers")
         selected_tables.add("products")
 
+    # Apply department-level table filtering for segregation
+    if department:
+        dept_key = department.lower()
+        allowed_tables = DEPARTMENT_TABLE_SCOPES.get(dept_key, DEPARTMENT_TABLE_SCOPES["general"])
+        selected_tables = selected_tables.intersection(allowed_tables)
+        if not selected_tables:
+            # Fallback to a safe allowed subset
+            selected_tables = allowed_tables.intersection({"customers", "orders", "products", "support_tickets"})
+
     selected_list = list(selected_tables)
-    logger.info("Routing query '%s' to database tables: %s", query, selected_list)
+    logger.info("Routing query '%s' (dept: %s) to database tables: %s", query, department, selected_list)
 
     # Initialize SQLDatabase with specific tables
     return SQLDatabase.from_uri(

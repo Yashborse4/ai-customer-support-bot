@@ -10,7 +10,7 @@ from src.core.config import settings
 from src.database.sql_db import get_db_for_query
 
 @tool
-async def query_customer_database(query: str) -> str:
+async def query_customer_database(query: str, department: str = "general") -> str:
     """Queries the Acme Corp customer database using natural language.
 
     This tool connects to relational tables such as customers, orders, products,
@@ -20,17 +20,26 @@ async def query_customer_database(query: str) -> str:
 
     Args:
         query: The natural language question (e.g., 'What is Alice Johnson's loyalty tier?').
+        department: Optional department scope (e.g., 'sales', 'support', 'general') of the request.
 
     Returns:
         The text response containing the answers retrieved from the database.
     """
-    db = get_db_for_query(query)
+    db = get_db_for_query(query, department=department)
     
-    llm = ChatOpenAI(
-        model=settings.MODEL_NAME,
-        api_key=settings.OPENAI_API_KEY,
-        temperature=0
-    )
+    if settings.LLM_PROVIDER.lower() == "local":
+        llm = ChatOpenAI(
+            model=settings.LOCAL_MODEL_NAME,
+            base_url=settings.LOCAL_LLM_BASE_URL,
+            api_key="local-placeholder",
+            temperature=0
+        )
+    else:
+        llm = ChatOpenAI(
+            model=settings.MODEL_NAME,
+            api_key=settings.OPENAI_API_KEY,
+            temperature=0
+        )
     
     agent_executor = create_sql_agent(
         llm=llm,

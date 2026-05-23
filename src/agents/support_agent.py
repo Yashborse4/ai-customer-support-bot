@@ -8,17 +8,26 @@ from src.tools.sql_tool import query_customer_database
 from src.schemas.state import SupportState
 
 def get_support_model() -> Runnable[Any, Any]:
-    """Returns the ChatOpenAI model bound with retrieval and SQL database tools.
+    """Returns the ChatOpenAI model bound with retrieval and database tools.
 
     Returns:
         A LangChain Runnable model instance bound with retrieve_company_info and query_customer_database.
     """
-    model = ChatOpenAI(
-        model=settings.MODEL_NAME,
-        api_key=settings.OPENAI_API_KEY,
-        temperature=0,
-        streaming=True
-    )
+    if settings.LLM_PROVIDER.lower() == "local":
+        model = ChatOpenAI(
+            model=settings.LOCAL_MODEL_NAME,
+            base_url=settings.LOCAL_LLM_BASE_URL,
+            api_key="local-placeholder",
+            temperature=0,
+            streaming=True
+        )
+    else:
+        model = ChatOpenAI(
+            model=settings.MODEL_NAME,
+            api_key=settings.OPENAI_API_KEY,
+            temperature=0,
+            streaming=True
+        )
     return model.bind_tools([retrieve_company_info, query_customer_database])
 
 async def support_agent_node(state: SupportState) -> Dict[str, Any]:
@@ -32,30 +41,37 @@ async def support_agent_node(state: SupportState) -> Dict[str, Any]:
     Returns:
         A dictionary containing the generated AIMessage to be appended to the state.
     """
+    department = state.get("department", "general")
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            "You are a professional customer support assistant for Acme Corp. "
+            f"You are a professional customer support assistant for Acme Corp in the {department.upper()} department. "
             "You can analyze images (screenshots) if provided. "
-            "You have access to two specialized tools to retrieve accurate information: "
-            "1. 'query_customer_database': Use this tool to look up structured customer, order, "
-            "product stock inventory, shipping, refund, and support ticket records from our SQLite database. "
-            "Use it for specific questions like 'What is Diana's loyalty tier?' or 'What is the tracking number for order ID 2?'. "
-            "2. 'retrieve_company_info': Use this tool to search the text-based knowledge base for policies, "
-            "shipping fees, return terms, device reset guides, and general descriptions. "
-            "Use it for general queries like 'What is your refund policy?'. "
-            "ALWAYS query the appropriate tool before answering questions about orders, products, or policies. "
+            "ALWAYS search the knowledge base before answering questions about products, shipping, or policies. "
+            "Use the `query_customer_database` tool to fetch relational records regarding customers, orders, stock inventory, returns, or support tickets. "
+            f"Your active department scope is '{department}'. You MUST supply department='{department}' when invoking search or query tools. "
             "If you see an error screenshot, explain what is happening and how to fix it based on your knowledge."
         )),
         MessagesPlaceholder(variable_name="messages"),
     ])
     
-    # Ensure GPT-4o is used for vision capabilities
-    model = ChatOpenAI(
-        model="gpt-4o",
-        api_key=settings.OPENAI_API_KEY,
-        temperature=0,
-        streaming=True
-    ).bind_tools([retrieve_company_info, query_customer_database])
+    # Select LLM based on provider settings
+    if settings.LLM_PROVIDER.lower() == "local":
+        model = ChatOpenAI(
+            model=settings.LOCAL_MODEL_NAME,
+            base_url=settings.LOCAL_LLM_BASE_URL,
+            api_key="local-placeholder",
+            temperature=0,
+            streaming=True
+        )
+    else:
+        model = ChatOpenAI(
+            model="gpt-4o",
+            api_key=settings.OPENAI_API_KEY,
+            temperature=0,
+            streaming=True
+        )
+    
+    model = model.bind_tools([retrieve_company_info, query_customer_database])
     
     chain = prompt | model
     response = await chain.ainvoke(state)
