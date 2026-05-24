@@ -1,27 +1,40 @@
-"""Unit and integration tests for SQLite database, query routing, and SQL Agent."""
+"""Unit and integration tests for Oracle database, query routing, and SQL Agent."""
 
-import os
 import pytest
-from src.database.sql_db import initialize_database, get_db_for_query, DB_PATH
+from unittest.mock import patch, MagicMock, AsyncMock
+from src.database.sql_db import initialize_database, get_db_for_query
 from src.tools.sql_tool import query_customer_database
 
+@pytest.fixture(autouse=True)
+def mock_db_connections():
+    """Automatically mock all database connections to prevent hitting a real Oracle instance."""
+    with patch("oracledb.connect") as mock_connect, \
+         patch("langchain_community.utilities.sql_database.SQLDatabase.from_uri") as mock_from_uri:
+        
+        # Setup mock Oracle database behavior
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = [0]  # Simulate empty tables for table_exists/seeding
+        mock_conn.cursor.return_value = mock_cursor
+        mock_connect.return_value = mock_conn
+
+        # Setup mock SQLDatabase behavior returning the selected tables
+        def mock_from_uri_side_effect(uri, include_tables=None, **kwargs):
+            mock_db = MagicMock()
+            mock_db.get_usable_table_names.return_value = include_tables or []
+            return mock_db
+        
+        mock_from_uri.side_effect = mock_from_uri_side_effect
+        yield mock_connect, mock_from_uri
+
 def test_database_initialization() -> None:
-    """Verify that initialize_database creates the file and populates the schema."""
-    # Ensure any previous test database is removed to test fresh setup
-    if os.path.exists(DB_PATH):
-        try:
-            os.remove(DB_PATH)
-        except PermissionError:
-            pass
-
+    """Verify that initialize_database attempts connection and executes table queries."""
     initialize_database()
-    assert os.path.exists(DB_PATH), "Database file should be created."
-
-    # Validate querying the database works
+    
+    # Validate querying routing returns the selected tables
     db = get_db_for_query("Show me all products")
     tables = db.get_usable_table_names()
     
-    # Selected tables for product keyword
     assert "products" in tables
     assert "orders" in tables
 
@@ -69,8 +82,6 @@ def test_department_segregation() -> None:
     assert "returns" in tables_billing
     assert "shipping" not in tables_billing
 
-from unittest.mock import patch, MagicMock, AsyncMock
-
 @pytest.mark.asyncio
 async def test_query_customer_database_tool() -> None:
     """Verify that the query_customer_database tool executes successfully using a mock."""
@@ -95,4 +106,3 @@ async def test_query_customer_database_tool() -> None:
         # Query for SuperWidget stock quantity
         response_stock = await query_customer_database.ainvoke({"query": "What is the stock quantity of SuperWidget 3000?"})
         assert "45" in response_stock, f"Expected 45 in response, got: {response_stock}"
-

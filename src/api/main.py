@@ -1,13 +1,13 @@
 from contextlib import asynccontextmanager
 import json
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from src.graph.workflow import support_bot_graph
 from src.database.vector_store import vector_store_manager
-from src.database.sql_db import initialize_database
+from src.database.sql_db import initialize_database, get_oracle_tables, get_db_credentials, test_db_connection
 from src.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -52,6 +52,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     thread_id: Optional[str] = None
+    department: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -113,13 +114,21 @@ def convert_to_api_messages(lc_messages: List[BaseMessage]) -> List[ChatMessage]
     return api_messages
 
 @app.get("/health")
-async def health_check() -> Dict[str, str]:
+async def health_check() -> Dict[str, Any]:
     """Health check endpoint.
 
     Returns:
-        A dictionary containing the status of the server and the LLM model name used.
+        A dictionary containing the status of the server and the configuration used.
     """
-    return {"status": "healthy", "model": settings.MODEL_NAME}
+    db_ok = test_db_connection()
+    return {
+        "status": "healthy",
+        "model": settings.MODEL_NAME,
+        "llm_model": settings.MODEL_NAME,
+        "embedding_model": settings.EMBEDDING_MODEL,
+        "vector_db": settings.VECTOR_DB_TYPE,
+        "db_connected": db_ok
+    }
 
 async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
     """Generates server-sent event (SSE) chunks from LangGraph token execution.
@@ -135,7 +144,10 @@ async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
         messages = convert_to_langchain_messages(request.messages)
         
         # Prepare state and checkpointer config
-        state = {"messages": messages}
+        state = {
+            "messages": messages,
+            "department": request.department or "general"
+        }
         config = {"configurable": {"thread_id": request.thread_id or "default-session"}}
         
         async for event in support_bot_graph.astream_events(state, config=config, version="v2"):
@@ -180,7 +192,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
         messages = convert_to_langchain_messages(request.messages)
         
         # Prepare state and checkpointer config
-        state = {"messages": messages}
+        state = {
+            "messages": messages,
+            "department": request.department or "general"
+        }
         config = {"configurable": {"thread_id": request.thread_id or "default-session"}}
         
         # Invoke LangGraph
@@ -212,6 +227,145 @@ async def reindex_documents() -> Dict[str, str]:
         return {"status": "success", "message": "Documents re-indexed successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Dynamic control console API models and endpoints
+class DbConfigPayload(BaseModel):
+    user: str
+    password: str
+    host: str
+    port: int
+    service_name: str
+
+class ModelConfigPayload(BaseModel):
+    MODEL_NAME: str
+    EMBEDDING_MODEL: str
+    LOCAL_LLM_BASE_URL: str
+    LOCAL_EMBEDDING_BASE_URL: str
+    VECTOR_DB_TYPE: str
+
+class TableMetadataPayload(BaseModel):
+    table_name: str
+    description: str
+
+class SaveConfigPayload(BaseModel):
+    db_config: Optional[DbConfigPayload] = None
+    model_settings: Optional[ModelConfigPayload] = Field(None, alias="model_config")
+
+@app.get("/api/config")
+async def get_config() -> Dict[str, Any]:
+    """Retrieves dynamic model and database configurations."""
+    creds = get_db_credentials()
+    return {
+        "db_config": creds,
+        "model_config": {
+            "MODEL_NAME": settings.MODEL_NAME,
+            "EMBEDDING_MODEL": settings.EMBEDDING_MODEL,
+            "LOCAL_LLM_BASE_URL": settings.LOCAL_LLM_BASE_URL,
+            "LOCAL_EMBEDDING_BASE_URL": settings.LOCAL_EMBEDDING_BASE_URL,
+            "VECTOR_DB_TYPE": settings.VECTOR_DB_TYPE
+        }
+    }
+
+@app.post("/api/config")
+async def save_config(payload: SaveConfigPayload) -> Dict[str, str]:
+    """Saves dynamic database connection configurations or model settings.
+
+    Args:
+        payload: The config settings payload containing optional db_config and/or model_config.
+
+    Returns:
+        A dictionary with a status and message.
+
+    Raises:
+        HTTPException: If saving configuration fails.
+    """
+    import json
+    import os
+    
+    os.makedirs("data", exist_ok=True)
+    
+    if payload.db_config:
+        db_config_path = os.path.join("data", "db_config.json")
+        try:
+            with open(db_config_path, "w", encoding="utf-8") as f:
+                json.dump(payload.db_config.model_dump(), f, indent=4)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save db config: {e}")
+            
+    if payload.model_settings:
+        model_config_path = os.path.join("data", "model_config.json")
+        try:
+            with open(model_config_path, "w", encoding="utf-8") as f:
+                json.dump(payload.model_settings.model_dump(), f, indent=4)
+            # Update settings singleton attributes in-memory
+            settings.MODEL_NAME = payload.model_settings.MODEL_NAME
+            settings.EMBEDDING_MODEL = payload.model_settings.EMBEDDING_MODEL
+            settings.LOCAL_LLM_BASE_URL = payload.model_settings.LOCAL_LLM_BASE_URL
+            settings.LOCAL_EMBEDDING_BASE_URL = payload.model_settings.LOCAL_EMBEDDING_BASE_URL
+            settings.VECTOR_DB_TYPE = payload.model_settings.VECTOR_DB_TYPE
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save model config: {e}")
+            
+    return {"status": "success", "message": "Configuration updated successfully."}
+
+@app.get("/api/database/tables")
+async def fetch_tables() -> Dict[str, Any]:
+    """Queries Oracle database dynamically and returns user tables."""
+    tables = get_oracle_tables()
+    # Also load saved metadata descriptions if available
+    import json
+    import os
+    table_metadata_path = os.path.join("data", "table_metadata.json")
+    metadata = {}
+    if os.path.exists(table_metadata_path):
+        try:
+            with open(table_metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+    return {"tables": tables, "metadata": metadata}
+
+@app.post("/api/database/tables/metadata")
+async def save_table_metadata(payload: TableMetadataPayload) -> Dict[str, str]:
+    """Saves user-configured semantic description for a table."""
+    import json
+    import os
+    table_metadata_path = os.path.join("data", "table_metadata.json")
+    metadata = {}
+    if os.path.exists(table_metadata_path):
+        try:
+            with open(table_metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+            
+    metadata[payload.table_name.lower()] = payload.description
+    
+    try:
+        with open(table_metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=4)
+        return {"status": "success", "message": "Table metadata saved successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save metadata: {e}")
+
+@app.post("/api/rag/upload")
+async def upload_document(file: UploadFile = File(...)) -> Dict[str, str]:
+    """Receives a document file, saves it to data/ directory, and triggers re-indexing."""
+    import os
+    import shutil
+    os.makedirs("data", exist_ok=True)
+    file_path = os.path.join("data", file.filename)
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Trigger layout-aware extraction and indexing
+        vector_store_manager.load_and_index_documents("data")
+        return {"status": "success", "message": f"File '{file.filename}' uploaded and indexed successfully."}
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail=f"Failed to upload and index document: {e}")
 
 if __name__ == "__main__":
     import uvicorn

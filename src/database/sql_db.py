@@ -6,181 +6,261 @@ filter database tables for LangChain SQL agents to handle large schemas.
 
 import logging
 import os
-import sqlite3
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, Any
 from langchain_community.utilities.sql_database import SQLDatabase
 from src.core.config import settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join("data", "support_records.db")
-
-# Dictionary mapping table names to their semantic descriptions.
+# Default semantic descriptions for SQL tables to guide query agent routing
 TABLE_DESCRIPTIONS: Dict[str, str] = {
-    "customers": "Contains customer profiles, contact information, emails, and loyalty tier levels.",
-    "products": "Contains catalog of items sold by Acme Corp, including name, category, price, and current stock inventory levels.",
-    "orders": "Contains transaction history, purchased product IDs, purchase dates, status, quantity, and total billing amounts.",
-    "support_tickets": "Contains support interactions, ticket subjects, status (open/closed), priority, and creation dates.",
-    "returns": "Contains records of product returns, reasons for return, refund amounts, and status of returns.",
-    "shipping": "Contains shipment tracking details, carrier names, tracking numbers, and shipment statuses."
+    "customers": "Contains customer details including names, email addresses, phone numbers, and loyalty tiers.",
+    "products": "Contains details of company products, descriptions, prices, stock quantities, and categories.",
+    "orders": "Contains transaction records linking customers and products, purchase dates, order totals, and statuses.",
+    "support_tickets": "Contains user customer support history, problem descriptions, priority rankings, status flags, and timestamps.",
+    "returns": "Contains customer refund records, return reasons, eligibility statuses, and processing dates.",
+    "shipping": "Contains package delivery details, carrier names, tracking numbers, estimated arrival dates, and shipping progress status."
 }
+
+def get_db_credentials() -> Dict[str, Any]:
+    """Loads database connection credentials, falling back to settings."""
+    config_path = os.path.join("data", "db_config.json")
+    if os.path.exists(config_path):
+        try:
+            import json
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                return {
+                    "user": config.get("user", settings.DB_USER),
+                    "password": config.get("password", settings.DB_PASSWORD),
+                    "host": config.get("host", settings.DB_HOST),
+                    "port": int(config.get("port", settings.DB_PORT)),
+                    "service_name": config.get("service_name", settings.DB_SERVICE_NAME)
+                }
+        except Exception as e:
+            logger.error("Failed to load db_config.json: %s", e)
+    return {
+        "user": settings.DB_USER,
+        "password": settings.DB_PASSWORD,
+        "host": settings.DB_HOST,
+        "port": settings.DB_PORT,
+        "service_name": settings.DB_SERVICE_NAME
+    }
 
 def get_db_uri() -> str:
     """Returns the database URI for SQLAlchemy connection.
 
     Returns:
-        A string URI for connecting to the SQLite database.
+        A string URI for connecting to the Oracle database.
     """
-    # Create the directory if it does not exist
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    return f"sqlite:///{DB_PATH}"
+    creds = get_db_credentials()
+    return f"oracle+oracledb://{creds['user']}:{creds['password']}@{creds['host']}:{creds['port']}/{creds['service_name']}"
+
+def get_oracle_tables() -> List[str]:
+    """Retrieves all user table names from Oracle.
+
+    Returns:
+        A list of table name strings.
+    """
+    import oracledb
+    creds = get_db_credentials()
+    try:
+        conn = oracledb.connect(
+            user=creds["user"],
+            password=creds["password"],
+            host=creds["host"],
+            port=creds["port"],
+            service_name=creds["service_name"]
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT table_name FROM user_tables ORDER BY table_name")
+        tables = [row[0].lower() for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return tables
+    except Exception as e:
+        logger.error("Failed to fetch Oracle tables: %s", e)
+        return []
 
 def initialize_database() -> None:
-    """Initializes the SQLite database with schemas and populates mock data if empty.
+    """Initializes the Oracle database with schemas and populates mock data if empty.
 
     This setup models typical relational tables for a customer support bot.
     """
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    import oracledb
+    creds = get_db_credentials()
+
+    try:
+        # Try to connect to Oracle 11g database using thin mode
+        conn = oracledb.connect(
+            user=creds["user"],
+            password=creds["password"],
+            host=creds["host"],
+            port=creds["port"],
+            service_name=creds["service_name"]
+        )
+    except Exception as e:
+        logger.warning(
+            "Could not connect to Oracle database: %s. Skipping automatic table initialization. "
+            "Please ensure Oracle 11g is running and credentials are correct in your .env.", e
+        )
+        return
+
     cursor = conn.cursor()
+
+    def table_exists(table_name: str) -> bool:
+        cursor.execute("SELECT COUNT(*) FROM user_tables WHERE table_name = :1", (table_name.upper(),))
+        return cursor.fetchone()[0] > 0
 
     try:
         # 1. Customers Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS customers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                loyalty_tier TEXT NOT NULL CHECK(loyalty_tier IN ('Bronze', 'Silver', 'Gold', 'Platinum'))
-            )
-        """)
+        if not table_exists("customers"):
+            cursor.execute("""
+                CREATE TABLE customers (
+                    id NUMBER PRIMARY KEY,
+                    name VARCHAR2(150) NOT NULL,
+                    email VARCHAR2(150) UNIQUE NOT NULL,
+                    loyalty_tier VARCHAR2(50) NOT NULL CHECK(loyalty_tier IN ('Bronze', 'Silver', 'Gold', 'Platinum'))
+                )
+            """)
 
         # 2. Products Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                price REAL NOT NULL,
-                stock_quantity INTEGER NOT NULL,
-                description TEXT
-            )
-        """)
+        if not table_exists("products"):
+            cursor.execute("""
+                CREATE TABLE products (
+                    id NUMBER PRIMARY KEY,
+                    name VARCHAR2(150) NOT NULL,
+                    price NUMBER NOT NULL,
+                    stock_quantity NUMBER NOT NULL,
+                    description VARCHAR2(1000)
+                )
+            """)
 
         # 3. Orders Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_id INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
-                order_date TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('Pending', 'Shipped', 'Delivered', 'Cancelled')),
-                quantity INTEGER NOT NULL,
-                total_amount REAL NOT NULL,
-                FOREIGN KEY (customer_id) REFERENCES customers(id),
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            )
-        """)
+        if not table_exists("orders"):
+            cursor.execute("""
+                CREATE TABLE orders (
+                    id NUMBER PRIMARY KEY,
+                    customer_id NUMBER NOT NULL,
+                    product_id NUMBER NOT NULL,
+                    order_date VARCHAR2(50) NOT NULL,
+                    status VARCHAR2(50) NOT NULL CHECK(status IN ('Pending', 'Shipped', 'Delivered', 'Cancelled')),
+                    quantity NUMBER NOT NULL,
+                    total_amount NUMBER NOT NULL,
+                    FOREIGN KEY (customer_id) REFERENCES customers(id),
+                    FOREIGN KEY (product_id) REFERENCES products(id)
+                )
+            """)
 
         # 4. Support Tickets Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS support_tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_id INTEGER NOT NULL,
-                subject TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('Open', 'In Progress', 'Resolved')),
-                priority TEXT NOT NULL CHECK(priority IN ('Low', 'Medium', 'High', 'Critical')),
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (customer_id) REFERENCES customers(id)
-            )
-        """)
+        if not table_exists("support_tickets"):
+            cursor.execute("""
+                CREATE TABLE support_tickets (
+                    id NUMBER PRIMARY KEY,
+                    customer_id NUMBER NOT NULL,
+                    subject VARCHAR2(500) NOT NULL,
+                    status VARCHAR2(50) NOT NULL CHECK(status IN ('Open', 'In Progress', 'Resolved')),
+                    priority VARCHAR2(50) NOT NULL CHECK(priority IN ('Low', 'Medium', 'High', 'Critical')),
+                    created_at VARCHAR2(50) NOT NULL,
+                    FOREIGN KEY (customer_id) REFERENCES customers(id)
+                )
+            """)
 
         # 5. Returns Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS returns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER UNIQUE NOT NULL,
-                reason TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('Processing', 'Approved', 'Rejected')),
-                refund_amount REAL NOT NULL,
-                FOREIGN KEY (order_id) REFERENCES orders(id)
-            )
-        """)
+        if not table_exists("returns"):
+            cursor.execute("""
+                CREATE TABLE returns (
+                    id NUMBER PRIMARY KEY,
+                    order_id NUMBER UNIQUE NOT NULL,
+                    reason VARCHAR2(500) NOT NULL,
+                    status VARCHAR2(50) NOT NULL CHECK(status IN ('Processing', 'Approved', 'Rejected')),
+                    refund_amount NUMBER NOT NULL,
+                    FOREIGN KEY (order_id) REFERENCES orders(id)
+                )
+            """)
 
         # 6. Shipping Table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS shipping (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER UNIQUE NOT NULL,
-                carrier TEXT NOT NULL,
-                tracking_number TEXT UNIQUE NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('Manifested', 'In Transit', 'Out for Delivery', 'Delivered')),
-                FOREIGN KEY (order_id) REFERENCES orders(id)
-            )
-        """)
+        if not table_exists("shipping"):
+            cursor.execute("""
+                CREATE TABLE shipping (
+                    id NUMBER PRIMARY KEY,
+                    order_id NUMBER UNIQUE NOT NULL,
+                    carrier VARCHAR2(50) NOT NULL,
+                    tracking_number VARCHAR2(100) UNIQUE NOT NULL,
+                    status VARCHAR2(50) NOT NULL CHECK(status IN ('Manifested', 'In Transit', 'Out for Delivery', 'Delivered')),
+                    FOREIGN KEY (order_id) REFERENCES orders(id)
+                )
+            """)
 
         conn.commit()
 
         # Seed mock data if tables are empty
         cursor.execute("SELECT COUNT(*) FROM customers")
         if cursor.fetchone()[0] == 0:
-            logger.info("Seeding relational database tables with mock data...")
+            logger.info("Seeding Oracle database tables with mock data...")
 
             # Customers
             customers_data = [
-                ("Alice Johnson", "alice.j@example.com", "Gold"),
-                ("Bob Smith", "bob.smith@example.com", "Silver"),
-                ("Charlie Brown", "charlie.b@example.com", "Bronze"),
-                ("Diana Prince", "diana.p@example.com", "Platinum")
+                (1, "Alice Johnson", "alice.j@example.com", "Gold"),
+                (2, "Bob Smith", "bob.smith@example.com", "Silver"),
+                (3, "Charlie Brown", "charlie.b@example.com", "Bronze"),
+                (4, "Diana Prince", "diana.p@example.com", "Platinum")
             ]
-            cursor.executemany("INSERT INTO customers (name, email, loyalty_tier) VALUES (?, ?, ?)", customers_data)
+            for row in customers_data:
+                cursor.execute("INSERT INTO customers (id, name, email, loyalty_tier) VALUES (:1, :2, :3, :4)", row)
 
             # Products
             products_data = [
-                ("SuperWidget 3000", 129.99, 45, "Flagship smart home controller with multi-protocol support."),
-                ("SmartPlug Lite", 24.99, 150, "Energy-monitoring Wi-Fi smart plug."),
-                ("Acme SoundBar", 199.99, 15, "Dolby Atmos enabled home theater soundbar."),
-                ("Vision Camera", 89.99, 0, "Outdoor 2K security camera with night vision.")
+                (1, "SuperWidget 3000", 129.99, 45, "Flagship smart home controller with multi-protocol support."),
+                (2, "SmartPlug Lite", 24.99, 150, "Energy-monitoring Wi-Fi smart plug."),
+                (3, "Acme SoundBar", 199.99, 15, "Dolby Atmos enabled home theater soundbar."),
+                (4, "Vision Camera", 89.99, 0, "Outdoor 2K security camera with night vision.")
             ]
-            cursor.executemany("INSERT INTO products (name, price, stock_quantity, description) VALUES (?, ?, ?, ?)", products_data)
+            for row in products_data:
+                cursor.execute("INSERT INTO products (id, name, price, stock_quantity, description) VALUES (:1, :2, :3, :4, :5)", row)
 
             # Orders
             orders_data = [
-                (1, 1, "2026-05-10", "Delivered", 1, 129.99), # Alice bought SuperWidget
-                (1, 2, "2026-05-12", "Delivered", 2, 49.98),  # Alice bought SmartPlugs
-                (2, 3, "2026-05-20", "Shipped", 1, 199.99),   # Bob bought SoundBar
-                (3, 4, "2026-05-21", "Pending", 1, 89.99),    # Charlie bought Vision Camera
-                (4, 1, "2026-05-22", "Cancelled", 1, 129.99)  # Diana order cancelled
+                (1, 1, 1, "2026-05-10", "Delivered", 1, 129.99), # Alice bought SuperWidget
+                (2, 1, 2, "2026-05-12", "Delivered", 2, 49.98),  # Alice bought SmartPlugs
+                (3, 2, 3, "2026-05-20", "Shipped", 1, 199.99),   # Bob bought SoundBar
+                (4, 3, 4, "2026-05-21", "Pending", 1, 89.99),    # Charlie bought Vision Camera
+                (5, 4, 1, "2026-05-22", "Cancelled", 1, 129.99)  # Diana order cancelled
             ]
-            cursor.executemany("INSERT INTO orders (customer_id, product_id, order_date, status, quantity, total_amount) VALUES (?, ?, ?, ?, ?, ?)", orders_data)
+            for row in orders_data:
+                cursor.execute("INSERT INTO orders (id, customer_id, product_id, order_date, status, quantity, total_amount) VALUES (:1, :2, :3, :4, :5, :6, :7)", row)
 
             # Support Tickets
             tickets_data = [
-                (1, "How to reset SuperWidget 3000", "Resolved", "Medium", "2026-05-11"),
-                (2, "Soundbar connection issue", "In Progress", "High", "2026-05-21"),
-                (3, "Vision Camera out of stock", "Open", "Low", "2026-05-22")
+                (1, 1, "How to reset SuperWidget 3000", "Resolved", "Medium", "2026-05-11"),
+                (2, 2, "Soundbar connection issue", "In Progress", "High", "2026-05-21"),
+                (3, 3, "Vision Camera out of stock", "Open", "Low", "2026-05-22")
             ]
-            cursor.executemany("INSERT INTO support_tickets (customer_id, subject, status, priority, created_at) VALUES (?, ?, ?, ?, ?)", tickets_data)
+            for row in tickets_data:
+                cursor.execute("INSERT INTO support_tickets (id, customer_id, subject, status, priority, created_at) VALUES (:1, :2, :3, :4, :5, :6)", row)
 
             # Returns
             returns_data = [
-                (5, "Cancelled before shipment", "Approved", 129.99)
+                (1, 5, "Cancelled before shipment", "Approved", 129.99)
             ]
-            cursor.executemany("INSERT INTO returns (order_id, reason, status, refund_amount) VALUES (?, ?, ?, ?)", returns_data)
+            for row in returns_data:
+                cursor.execute("INSERT INTO returns (id, order_id, reason, status, refund_amount) VALUES (:1, :2, :3, :4, :5)", row)
 
             # Shipping
             shipping_data = [
-                (1, "FedEx", "1Z999AA10123456784", "Delivered"),
-                (2, "UPS", "1Z999AA10123456789", "Delivered"),
-                (3, "DHL", "DHL8872635412", "In Transit")
+                (1, 1, "FedEx", "1Z999AA10123456784", "Delivered"),
+                (2, 2, "UPS", "1Z999AA10123456789", "Delivered"),
+                (3, 3, "DHL", "DHL8872635412", "In Transit")
             ]
-            cursor.executemany("INSERT INTO shipping (order_id, carrier, tracking_number, status) VALUES (?, ?, ?, ?)", shipping_data)
+            for row in shipping_data:
+                cursor.execute("INSERT INTO shipping (id, order_id, carrier, tracking_number, status) VALUES (:1, :2, :3, :4, :5)", row)
 
             conn.commit()
-            logger.info("Database seeding complete.")
+            logger.info("Oracle database seeding complete.")
 
-    except sqlite3.Error as e:
-        logger.error("SQLite initialization error: %s", e)
+    except oracledb.Error as e:
+        logger.error("Oracle initialization error: %s", e)
         conn.rollback()
         raise e
     finally:
@@ -248,6 +328,26 @@ def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabas
         if keyword in query_lower:
             selected_tables.update(tables)
 
+    # Load dynamic table metadata if exists and perform semantic description matching
+    table_metadata_path = os.path.join("data", "table_metadata.json")
+    table_desc = TABLE_DESCRIPTIONS.copy()
+    if os.path.exists(table_metadata_path):
+        try:
+            import json
+            with open(table_metadata_path, "r", encoding="utf-8") as f:
+                saved_metadata = json.load(f)
+                for tbl, desc in saved_metadata.items():
+                    table_desc[tbl.lower()] = desc
+        except Exception as e:
+            logger.error("Failed to load table_metadata.json: %s", e)
+
+    # Match user query terms against semantic descriptions
+    for tbl, desc in table_desc.items():
+        desc_lower = desc.lower()
+        for word in query_lower.split():
+            if len(word) > 3 and word in desc_lower:
+                selected_tables.add(tbl)
+
     # Default fallback tables if no keywords matched
     if not selected_tables:
         selected_tables = {"customers", "orders", "products"}
@@ -276,3 +376,25 @@ def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabas
         get_db_uri(),
         include_tables=selected_list
     )
+
+def test_db_connection() -> bool:
+    """Tests connection to the Oracle database.
+
+    Returns:
+        True if connection succeeds, False otherwise.
+    """
+    import oracledb
+    creds = get_db_credentials()
+    try:
+        conn = oracledb.connect(
+            user=creds["user"],
+            password=creds["password"],
+            host=creds["host"],
+            port=creds["port"],
+            service_name=creds["service_name"]
+        )
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error("Database connection test failed: %s", e)
+        return False

@@ -16,11 +16,8 @@ python-multipart
 pandas
 openpyxl
 docx2txt
-
+oracledb
 docling
 qdrant-client
 faiss-cpu
 langchain-qdrant
-pandas
-openpyxl
-docx2txt

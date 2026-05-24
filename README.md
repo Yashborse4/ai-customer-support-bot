@@ -10,19 +10,19 @@ A professional, enterprise-grade AI customer support platform built with a high-
 graph TD
     A[Next.js React Client] -->|SSE Stream /chat/stream| B[FastAPI Backend]
     A -->|Static Chat /chat| B
-    B -->|Query / Retrieve| C[ChromaDB Vector Store]
+    B -->|Query / Retrieve| C[Local Vector Database]
     B -->|Checkpointer Persistence| D[MemorySaver Checkpoints]
-    B -->|LLM & Vision Bindings| E[OpenAI GPT-4o]
-    B -->|SQL Queries| G[SQLite Relational DB]
-    C -->|Indexes| F[PDF & TXT Knowledge Base]
+    B -->|LLM Bindings| E[Local LLM (Qwen 2.5)]
+    B -->|SQL Queries| G[Oracle 11g Relational DB]
+    C -->|Indexes| F[Multi-format Knowledge Base]
 ```
 
 ### Core Execution Flow
-1. **RAG Ingestion**: On server start, company documentation (PDFs and Text files in `data/`) are split and indexed into a local ChromaDB vector database using OpenAI's `text-embedding-3-small` model.
-2. **Relational Database Queries (SQL Agent)**: Integrates a SQLite database containing transaction, customer profiles, shipping tracking, returns, and support ticket records. A LangChain SQL Agent queries this relational data using natural language.
+1. **RAG Ingestion**: On server start, company documentation (PDFs, TXT, DOCX, and Excel files in `data/`) are processed using **Docling** and indexed into a local vector database (Qdrant/FAISS/ChromaDB) using local embeddings (e.g. `nomic-embed-text` via Ollama).
+2. **Relational Database Queries (SQL Agent)**: Integrates an **Oracle 11g** database containing transaction, customer profiles, shipping tracking, returns, and support ticket records. A LangChain SQL Agent queries this relational data using natural language via the `oracledb` thin client driver.
 3. **Table Selector & Router**: Dynamically matches user queries against table descriptions to load only relevant schemas into the SQL database context, preventing LLM prompt clutter when scaling to a high number of tables.
 4. **Stateful Conversation**: LangGraph maintains the support assistant's state, orchestrating conditional routing. If a customer query demands company specifics (products, shipping, returns, technical policies), the agent invokes a retrieval tool to fetch grounded knowledge.
-5. **Multi-Modal Vision**: If a customer uploads a screenshot of an error, the backend routes the base64-encoded image directly to `gpt-4o` to analyze the error visually and provide instant debugging steps.
+5. **Local LLM Orchestration**: Connects fully offline to Ollama or a custom local model gateway, running Qwen 2.5 or other local models, eliminating third-party API dependencies.
 6. **Real-time Streaming**: Model responses are streamed back to the Next.js client token-by-token using HTTP Server-Sent Events (SSE), reducing Time-to-First-Token (TTFT) and providing a premium, fluid user experience.
 
 ---
@@ -32,11 +32,11 @@ graph TD
 ### Backend Service
 * **API Framework**: [FastAPI](https://fastapi.tiangolo.com/) (using asynchronous endpoints & Lifespan managers)
 * **Agentic Orchestration**: [LangGraph](https://github.com/langchain-ai/langgraph) (featuring `MemorySaver` thread checkpoints)
-* **LLM Engine**: [LangChain OpenAI](https://github.com/langchain-ai/langchain) (integrating GPT-4o and OpenAI Embeddings)
+* **LLM Engine**: LangChain community model integrations (supporting local **Qwen 2.5** and local embeddings)
 * **SQL Agent Toolkit**: LangChain `SQLDatabase` and `create_sql_agent`
-* **Vector Database**: [ChromaDB](https://github.com/chroma-core/chroma) (local persistent storage)
-* **Relational Database**: [SQLite](https://sqlite.org/) with [SQLAlchemy](https://www.sqlalchemy.org/) ORM
-* **Document Loaders**: `PyPDFLoader` and `TextLoader` via `langchain-community`
+* **Vector Database**: Configurable [Qdrant](https://qdrant.tech/) or [FAISS](https://github.com/facebookresearch/faiss) or [ChromaDB](https://github.com/chroma-core/chroma)
+* **Relational Database**: **Oracle 11g** via `oracledb` Thin Driver and SQLAlchemy ORM
+* **Document Loaders**: **Docling** for advanced, unified offline layout-aware parsing of PDF, DOCX, and Excel files
 
 ### Frontend Interface
 * **Framework**: [Next.js](https://nextjs.org/) (React, TypeScript)
@@ -63,7 +63,8 @@ graph TD
 ### Prerequisites
 * Docker & Docker Compose (Recommended)
 * OR Python 3.9+ & Node.js 18+
-* OpenAI API Key (configured in your `.env` file)
+* Local LLM runner (e.g., [Ollama](https://ollama.com/) with Qwen 2.5 model pulled)
+* Oracle 11g Database (or containerized Oracle instance)
 
 ---
 
@@ -78,11 +79,23 @@ graph TD
 2. Configure environment variables:
    Create a `.env` file in the root directory:
    ```env
-   OPENAI_API_KEY=sk-proj-...
+   # Oracle 11g Database Configuration
+   DB_USER=system
+   DB_PASSWORD=oracle
+   DB_HOST=localhost
+   DB_PORT=1521
+   DB_SERVICE_NAME=xe
+
+   # Vector Store Configuration
    PERSIST_DIRECTORY=./chroma_db
    COLLECTION_NAME=customer_support_kb
-   MODEL_NAME=gpt-4o
-   EMBEDDING_MODEL=text-embedding-3-small
+
+   # Model Configuration
+   MODEL_NAME=qwen2.5
+   EMBEDDING_MODEL=nomic-embed-text
+   LOCAL_LLM_BASE_URL=http://localhost:11434/v1
+   LOCAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
+
    NEXT_PUBLIC_API_URL=http://localhost:8000
    ```
 
@@ -106,11 +119,11 @@ graph TD
    pip install -r requirements.txt
    ```
 
-2. Make sure your `.env` file exists with your `OPENAI_API_KEY`.
+2. Make sure your `.env` file is properly configured with your Oracle DB connection parameters and local model URLs.
 
-3. Place company documentation (e.g., PDFs, TXT files) inside the `data/` directory.
+3. Place company documentation (e.g., PDFs, TXT, DOCX, or Excel files) inside the `data/` directory.
 
-4. Run the API server (will automatically initialize the relational SQLite database on startup):
+4. Run the API server (will automatically initialize the Oracle 11g database tables and mock seed data if they do not exist):
    ```bash
    uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
@@ -145,8 +158,8 @@ python -m pytest
 ## 📈 Project Roadmap
 
 - [x] Complete Multi-modal query integration (Vision analysis for error screenshots).
-- [x] Robust PDF and Text indexing system.
-- [x] Integrate Relational Database (SQLite) with LangChain SQL Agent tool.
+- [x] Robust PDF, DOCX, and Excel indexing system using Docling.
+- [x] Migrate relational database to Oracle 11g with thin client driver support.
 - [x] Implement Dynamic Table Selection & Routing for large schemas.
 - [x] State-of-the-art token streaming architecture (SSE) for low Time-to-First-Token (TTFT).
 - [x] Premium Next.js interactive frontend with RAG insights.

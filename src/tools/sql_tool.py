@@ -34,10 +34,43 @@ async def query_customer_database(query: str, department: str = "general") -> st
         temperature=0
     )
     
+    # Build semantic context of tables for the SQL Agent
+    import os
+    import json
+    from src.database.sql_db import TABLE_DESCRIPTIONS
+
+    table_metadata_path = os.path.join("data", "table_metadata.json")
+    table_desc = TABLE_DESCRIPTIONS.copy()
+    if os.path.exists(table_metadata_path):
+        try:
+            with open(table_metadata_path, "r", encoding="utf-8") as f:
+                saved_metadata = json.load(f)
+                for tbl, desc in saved_metadata.items():
+                    table_desc[tbl.lower()] = desc
+        except Exception:
+            pass
+
+    usable_tables = db.get_usable_table_names()
+    desc_lines = []
+    for tbl in usable_tables:
+        desc = table_desc.get(tbl.lower(), "No description provided.")
+        desc_lines.append(f"Table '{tbl}': {desc}")
+        
+    descriptions_context = "\n".join(desc_lines)
+    
+    custom_suffix = (
+        "You are working with database table names. Here is detailed semantic information "
+        "about what each active table represents and what is stored inside it to guide your query choice:\n\n"
+        f"{descriptions_context}\n\n"
+        "Use this information to write correct queries on the active tables. "
+        "Do NOT query tables not in this list."
+    )
+
     agent_executor = create_sql_agent(
         llm=llm,
         db=db,
         agent_type="openai-tools",
+        suffix=custom_suffix,
         verbose=False
     )
     
