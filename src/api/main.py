@@ -7,7 +7,14 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from src.graph.workflow import support_bot_graph
 from src.database.vector_store import vector_store_manager
-from src.database.sql_db import initialize_database, get_oracle_tables, get_db_credentials, test_db_connection
+from src.database.sql_db import (
+    initialize_database,
+    get_db_tables,
+    get_all_table_metadata,
+    save_table_metadata_db,
+    get_db_credentials,
+    test_db_connection
+)
 from src.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -310,40 +317,16 @@ async def save_config(payload: SaveConfigPayload) -> Dict[str, str]:
 
 @app.get("/api/database/tables")
 async def fetch_tables() -> Dict[str, Any]:
-    """Queries Oracle database dynamically and returns user tables."""
-    tables = get_oracle_tables()
-    # Also load saved metadata descriptions if available
-    import json
-    import os
-    table_metadata_path = os.path.join("data", "table_metadata.json")
-    metadata = {}
-    if os.path.exists(table_metadata_path):
-        try:
-            with open(table_metadata_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-        except Exception:
-            pass
+    """Queries the database dynamically and returns user tables with descriptions."""
+    tables = get_db_tables()
+    metadata = get_all_table_metadata()
     return {"tables": tables, "metadata": metadata}
 
 @app.post("/api/database/tables/metadata")
 async def save_table_metadata(payload: TableMetadataPayload) -> Dict[str, str]:
-    """Saves user-configured semantic description for a table."""
-    import json
-    import os
-    table_metadata_path = os.path.join("data", "table_metadata.json")
-    metadata = {}
-    if os.path.exists(table_metadata_path):
-        try:
-            with open(table_metadata_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-        except Exception:
-            pass
-            
-    metadata[payload.table_name.lower()] = payload.description
-    
+    """Saves user-configured semantic description for a table in SQLite metadata DB."""
     try:
-        with open(table_metadata_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=4)
+        save_table_metadata_db(payload.table_name, payload.description)
         return {"status": "success", "message": "Table metadata saved successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save metadata: {e}")

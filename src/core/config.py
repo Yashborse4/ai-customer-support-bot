@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     QDRANT_URL: Optional[str] = None
     FAISS_INDEX_PATH: str = "./faiss_db"
 
+    # Relational Database Configuration
+    DB_TYPE: str = "sqlite"  # "sqlite" or "oracle"
+    SQLITE_DB_PATH: str = "data/customer_support.db"
+
     # Oracle 11g Relational Database Configuration
     DB_USER: str = "system"
     DB_PASSWORD: str = "oracle"

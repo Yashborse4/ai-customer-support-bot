@@ -1,4 +1,4 @@
-"""Module for managing the relational SQLite database and table selection routing.
+"""Module for managing the relational SQLite/Oracle database and table selection routing.
 
 Provides functionality to initialize mock schemas, seed records, and dynamically
 filter database tables for LangChain SQL agents to handle large schemas.
@@ -22,6 +22,71 @@ TABLE_DESCRIPTIONS: Dict[str, str] = {
     "returns": "Contains customer refund records, return reasons, eligibility statuses, and processing dates.",
     "shipping": "Contains package delivery details, carrier names, tracking numbers, estimated arrival dates, and shipping progress status."
 }
+
+METADATA_DB_PATH = "data/metadata.db"
+
+def initialize_metadata_db() -> None:
+    """Initializes the SQLite database used to store table metadata/descriptions."""
+    import sqlite3
+    os.makedirs(os.path.dirname(METADATA_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(METADATA_DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS table_metadata (
+                table_name TEXT PRIMARY KEY,
+                description TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        
+        # Populate default descriptions if empty
+        cursor.execute("SELECT COUNT(*) FROM table_metadata")
+        if cursor.fetchone()[0] == 0:
+            for tbl, desc in TABLE_DESCRIPTIONS.items():
+                cursor.execute(
+                    "INSERT INTO table_metadata (table_name, description) VALUES (?, ?)",
+                    (tbl.lower(), desc)
+                )
+            conn.commit()
+    except Exception as e:
+        logger.error("Failed to initialize metadata DB: %s", e)
+    finally:
+        conn.close()
+
+def get_all_table_metadata() -> Dict[str, str]:
+    """Retrieves all table descriptions from the SQLite metadata database."""
+    initialize_metadata_db()
+    import sqlite3
+    metadata = {}
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT table_name, description FROM table_metadata")
+        for row in cursor.fetchall():
+            metadata[row[0].lower()] = row[1]
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to read table metadata from SQLite: %s", e)
+        return TABLE_DESCRIPTIONS.copy()
+    return metadata
+
+def save_table_metadata_db(table_name: str, description: str) -> None:
+    """Saves/updates a table's semantic description inside the SQLite metadata database."""
+    initialize_metadata_db()
+    import sqlite3
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO table_metadata (table_name, description) VALUES (?, ?)",
+            (table_name.lower(), description)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to save table metadata to SQLite: %s", e)
+        raise e
 
 def get_db_credentials() -> Dict[str, Any]:
     """Loads database connection credentials, falling back to settings."""
@@ -52,17 +117,39 @@ def get_db_uri() -> str:
     """Returns the database URI for SQLAlchemy connection.
 
     Returns:
-        A string URI for connecting to the Oracle database.
+        A string URI for connecting to the database.
     """
+    if settings.DB_TYPE.lower() == "sqlite":
+        os.makedirs(os.path.dirname(settings.SQLITE_DB_PATH) or "data", exist_ok=True)
+        return f"sqlite:///{settings.SQLITE_DB_PATH}"
+        
     creds = get_db_credentials()
     return f"oracle+oracledb://{creds['user']}:{creds['password']}@{creds['host']}:{creds['port']}/{creds['service_name']}"
 
-def get_oracle_tables() -> List[str]:
-    """Retrieves all user table names from Oracle.
+def get_db_tables() -> List[str]:
+    """Retrieves all user table names from the database (SQLite or Oracle).
 
     Returns:
         A list of table name strings.
     """
+    if settings.DB_TYPE.lower() == "sqlite":
+        import sqlite3
+        db_path = settings.SQLITE_DB_PATH
+        if not os.path.exists(db_path):
+            return []
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            tables = [row[0].lower() for row in cursor.fetchall()]
+            cursor.close()
+            conn.close()
+            return tables
+        except Exception as e:
+            logger.error("Failed to fetch SQLite tables: %s", e)
+            return []
+
+    # Oracle mode
     import oracledb
     creds = get_db_credentials()
     try:
@@ -83,11 +170,165 @@ def get_oracle_tables() -> List[str]:
         logger.error("Failed to fetch Oracle tables: %s", e)
         return []
 
-def initialize_database() -> None:
-    """Initializes the Oracle database with schemas and populates mock data if empty.
+# Backwards compatibility alias
+get_oracle_tables = get_db_tables
 
-    This setup models typical relational tables for a customer support bot.
-    """
+def initialize_sqlite() -> None:
+    """Initializes the local SQLite database with tables and mock seed data if empty."""
+    import sqlite3
+    db_path = settings.SQLITE_DB_PATH
+    
+    # Ensure directory exists
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+        
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    
+    try:
+        # Customers
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                loyalty_tier TEXT NOT NULL CHECK(loyalty_tier IN ('Bronze', 'Silver', 'Gold', 'Platinum'))
+            )
+        """)
+        
+        # Products
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                price REAL NOT NULL,
+                stock_quantity INTEGER NOT NULL,
+                description TEXT
+            )
+        """)
+        
+        # Orders
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                order_date TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('Pending', 'Shipped', 'Delivered', 'Cancelled')),
+                quantity INTEGER NOT NULL,
+                total_amount REAL NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customers(id),
+                FOREIGN KEY (product_id) REFERENCES products(id)
+            )
+        """)
+        
+        # Support Tickets
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id INTEGER PRIMARY KEY,
+                customer_id INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('Open', 'In Progress', 'Resolved')),
+                priority TEXT NOT NULL CHECK(priority IN ('Low', 'Medium', 'High', 'Critical')),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
+        """)
+        
+        # Returns
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS returns (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER UNIQUE NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('Processing', 'Approved', 'Rejected')),
+                refund_amount REAL NOT NULL,
+                FOREIGN KEY (order_id) REFERENCES orders(id)
+            )
+        """)
+        
+        # Shipping
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS shipping (
+                id INTEGER PRIMARY KEY,
+                order_id INTEGER UNIQUE NOT NULL,
+                carrier TEXT NOT NULL,
+                tracking_number TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('Manifested', 'In Transit', 'Out for Delivery', 'Delivered')),
+                FOREIGN KEY (order_id) REFERENCES orders(id)
+            )
+        """)
+        
+        conn.commit()
+        
+        # Seed mock data if tables are empty
+        cursor.execute("SELECT COUNT(*) FROM customers")
+        if cursor.fetchone()[0] == 0:
+            logger.info("Seeding SQLite database tables with mock data...")
+            
+            # Customers
+            customers_data = [
+                (1, "Alice Johnson", "alice.j@example.com", "Gold"),
+                (2, "Bob Smith", "bob.smith@example.com", "Silver"),
+                (3, "Charlie Brown", "charlie.b@example.com", "Bronze"),
+                (4, "Diana Prince", "diana.p@example.com", "Platinum")
+            ]
+            cursor.executemany("INSERT INTO customers (id, name, email, loyalty_tier) VALUES (?, ?, ?, ?)", customers_data)
+            
+            # Products
+            products_data = [
+                (1, "SuperWidget 3000", 129.99, 45, "Flagship smart home controller with multi-protocol support."),
+                (2, "SmartPlug Lite", 24.99, 150, "Energy-monitoring Wi-Fi smart plug."),
+                (3, "Acme SoundBar", 199.99, 15, "Dolby Atmos enabled home theater soundbar."),
+                (4, "Vision Camera", 89.99, 0, "Outdoor 2K security camera with night vision.")
+            ]
+            cursor.executemany("INSERT INTO products (id, name, price, stock_quantity, description) VALUES (?, ?, ?, ?, ?)", products_data)
+            
+            # Orders
+            orders_data = [
+                (1, 1, 1, "2026-05-10", "Delivered", 1, 129.99),
+                (2, 1, 2, "2026-05-12", "Delivered", 2, 49.98),
+                (3, 2, 3, "2026-05-20", "Shipped", 1, 199.99),
+                (4, 3, 4, "2026-05-21", "Pending", 1, 89.99),
+                (5, 4, 1, "2026-05-22", "Cancelled", 1, 129.99)
+            ]
+            cursor.executemany("INSERT INTO orders (id, customer_id, product_id, order_date, status, quantity, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?)", orders_data)
+            
+            # Support Tickets
+            tickets_data = [
+                (1, 1, "How to reset SuperWidget 3000", "Resolved", "Medium", "2026-05-11"),
+                (2, 2, "Soundbar connection issue", "In Progress", "High", "2026-05-21"),
+                (3, 3, "Vision Camera out of stock", "Open", "Low", "2026-05-22")
+            ]
+            cursor.executemany("INSERT INTO support_tickets (id, customer_id, subject, status, priority, created_at) VALUES (?, ?, ?, ?, ?, ?)", tickets_data)
+            
+            # Returns
+            returns_data = [
+                (1, 5, "Cancelled before shipment", "Approved", 129.99)
+            ]
+            cursor.executemany("INSERT INTO returns (id, order_id, reason, status, refund_amount) VALUES (?, ?, ?, ?, ?)", returns_data)
+            
+            # Shipping
+            shipping_data = [
+                (1, 1, "FedEx", "1Z999AA10123456784", "Delivered"),
+                (2, 2, "UPS", "1Z999AA10123456789", "Delivered"),
+                (3, 3, "DHL", "DHL8872635412", "In Transit")
+            ]
+            cursor.executemany("INSERT INTO shipping (id, order_id, carrier, tracking_number, status) VALUES (?, ?, ?, ?, ?)", shipping_data)
+            
+            conn.commit()
+            logger.info("SQLite database seeding complete.")
+    except Exception as e:
+        logger.error("SQLite initialization error: %s", e)
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+def initialize_oracle() -> None:
+    """Initializes the Oracle database with tables and mock seed data if empty."""
     import oracledb
     creds = get_db_credentials()
 
@@ -266,6 +507,16 @@ def initialize_database() -> None:
     finally:
         conn.close()
 
+def initialize_database() -> None:
+    """Initializes the database (SQLite or Oracle) with schemas and populates mock data."""
+    # Also initialize the table metadata store SQLite DB
+    initialize_metadata_db()
+    
+    if settings.DB_TYPE.lower() == "sqlite":
+        initialize_sqlite()
+    else:
+        initialize_oracle()
+
 # Allowed tables scoped per department to satisfy enterprise segregation requirements.
 DEPARTMENT_TABLE_SCOPES: Dict[str, Set[str]] = {
     "sales": {"customers", "orders", "products", "shipping"},
@@ -328,18 +579,8 @@ def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabas
         if keyword in query_lower:
             selected_tables.update(tables)
 
-    # Load dynamic table metadata if exists and perform semantic description matching
-    table_metadata_path = os.path.join("data", "table_metadata.json")
-    table_desc = TABLE_DESCRIPTIONS.copy()
-    if os.path.exists(table_metadata_path):
-        try:
-            import json
-            with open(table_metadata_path, "r", encoding="utf-8") as f:
-                saved_metadata = json.load(f)
-                for tbl, desc in saved_metadata.items():
-                    table_desc[tbl.lower()] = desc
-        except Exception as e:
-            logger.error("Failed to load table_metadata.json: %s", e)
+    # Load dynamic table metadata from SQLite metadata DB and perform semantic matching
+    table_desc = get_all_table_metadata()
 
     # Match user query terms against semantic descriptions
     for tbl, desc in table_desc.items():
@@ -378,11 +619,22 @@ def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabas
     )
 
 def test_db_connection() -> bool:
-    """Tests connection to the Oracle database.
+    """Tests connection to the database.
 
     Returns:
         True if connection succeeds, False otherwise.
     """
+    if settings.DB_TYPE.lower() == "sqlite":
+        import sqlite3
+        try:
+            conn = sqlite3.connect(settings.SQLITE_DB_PATH)
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error("SQLite connection test failed: %s", e)
+            return False
+
+    # Oracle mode
     import oracledb
     creds = get_db_credentials()
     try:
