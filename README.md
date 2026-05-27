@@ -79,12 +79,16 @@ graph TD
 2. Configure environment variables:
    Create a `.env` file in the root directory:
    ```env
-   # Oracle 11g Database Configuration
-   DB_USER=system
-   DB_PASSWORD=oracle
-   DB_HOST=localhost
-   DB_PORT=1521
-   DB_SERVICE_NAME=xe
+    # Relational Database Selection (sqlite or oracle)
+    DB_TYPE=sqlite
+    SQLITE_DB_PATH=data/customer_support.db
+
+    # Oracle 11g Database Configuration (only used if DB_TYPE=oracle)
+    DB_USER=system
+    DB_PASSWORD=oracle
+    DB_HOST=localhost
+    DB_PORT=1521
+    DB_SERVICE_NAME=xe
 
    # Vector Store Configuration
    PERSIST_DIRECTORY=./chroma_db
@@ -119,11 +123,11 @@ graph TD
    pip install -r requirements.txt
    ```
 
-2. Make sure your `.env` file is properly configured with your Oracle DB connection parameters and local model URLs.
+2. Make sure your `.env` file is properly configured with your database selection (`DB_TYPE` and paths) and local model URLs.
 
 3. Place company documentation (e.g., PDFs, TXT, DOCX, or Excel files) inside the `data/` directory.
 
-4. Run the API server (will automatically initialize the Oracle 11g database tables and mock seed data if they do not exist):
+4. Run the API server (will automatically initialize your selected database—SQLite or Oracle—populating tables and mock seed data if they do not exist):
    ```bash
    uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
