@@ -3,11 +3,37 @@
 Exposes a LangChain tool that leverages an SQL Agent to query relational support data.
 """
 
+import logging
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import create_sql_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from src.core.config import settings
 from src.database.sql_db import get_db_for_query
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Custom dialect-aware prompt guiding table queries and row limits
+custom_sql_prompt = ChatPromptTemplate.from_messages([
+    ("system", (
+        "You are an expert SQL translation agent designed to write valid queries.\n"
+        "You are querying a {dialect} database.\n\n"
+        "Rules for writing queries:\n"
+        "1. Only query the tables and columns that are explicitly listed in the schema.\n"
+        "2. DO NOT query columns that are not in the schema.\n"
+        "3. LIMIT REGULATION:\n"
+        "   - If the dialect is 'sqlite': Use standard `LIMIT N` to restrict rows.\n"
+        "   - If the dialect is 'oracle': NEVER use the `LIMIT` clause! To restrict rows to N results in Oracle, use the `ROWNUM` filter (e.g. `WHERE ROWNUM <= N`).\n"
+        "     Example: SELECT name FROM customers WHERE ROWNUM <= 5;\n"
+        "4. Date Handling: Oracle uses VARCHAR2 for dates in this database. Match string formats exactly (e.g., 'YYYY-MM-DD').\n"
+        "5. Respond ONLY with the executable SQL statement, wrapped in ```sql and ``` blocks.\n\n"
+        "Only use the following tables:\n"
+        "{table_info}"
+    )),
+    ("user", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad")
+])
 
 @tool
 async def query_customer_database(query: str, department: str = "general") -> str:
@@ -34,43 +60,11 @@ async def query_customer_database(query: str, department: str = "general") -> st
         temperature=0
     )
     
-    # Build semantic context of tables for the SQL Agent
-    import os
-    import json
-    from src.database.sql_db import TABLE_DESCRIPTIONS
-
-    table_metadata_path = os.path.join("data", "table_metadata.json")
-    table_desc = TABLE_DESCRIPTIONS.copy()
-    if os.path.exists(table_metadata_path):
-        try:
-            with open(table_metadata_path, "r", encoding="utf-8") as f:
-                saved_metadata = json.load(f)
-                for tbl, desc in saved_metadata.items():
-                    table_desc[tbl.lower()] = desc
-        except Exception:
-            pass
-
-    usable_tables = db.get_usable_table_names()
-    desc_lines = []
-    for tbl in usable_tables:
-        desc = table_desc.get(tbl.lower(), "No description provided.")
-        desc_lines.append(f"Table '{tbl}': {desc}")
-        
-    descriptions_context = "\n".join(desc_lines)
-    
-    custom_suffix = (
-        "You are working with database table names. Here is detailed semantic information "
-        "about what each active table represents and what is stored inside it to guide your query choice:\n\n"
-        f"{descriptions_context}\n\n"
-        "Use this information to write correct queries on the active tables. "
-        "Do NOT query tables not in this list."
-    )
-
     agent_executor = create_sql_agent(
         llm=llm,
         db=db,
+        prompt=custom_sql_prompt,
         agent_type="openai-tools",
-        suffix=custom_suffix,
         verbose=False
     )
     
@@ -78,4 +72,15 @@ async def query_customer_database(query: str, department: str = "general") -> st
         response = await agent_executor.ainvoke({"input": query})
         return response.get("output", "Could not fetch data from database.")
     except Exception as e:
-        return f"Error executing database query: {str(e)}"
+        logger.warning("SQL agent execution failed: %s. Retrying with self-correction...", e)
+        try:
+            # Query again, providing the failed query and execution error details to trigger self-correction
+            retry_query = f"""The previous database query execution failed.
+User Question: {query}
+Error details: {str(e)}
+
+Please analyze the execution error and write a corrected query to fetch the correct data."""
+            response = await agent_executor.ainvoke({"input": retry_query})
+            return response.get("output", f"Error executing database query: {str(e)}")
+        except Exception as retry_err:
+            return f"Error executing database query: {str(retry_err)}"
