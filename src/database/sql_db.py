@@ -113,6 +113,20 @@ def get_db_credentials() -> Dict[str, Any]:
         "service_name": settings.DB_SERVICE_NAME
     }
 
+def get_oracle_dsn(creds: Dict[str, Any]) -> str:
+    """Constructs the Oracle Data Source Name (DSN) from connection credentials.
+
+    Supports:
+    1. Full connection descriptors / TNS strings (e.g. starting with '(').
+    2. Standard host:port/service_name strings.
+    """
+    host = creds.get("host", "").strip()
+    if host.startswith("("):
+        return host
+    port = creds.get("port", 1521)
+    service_name = creds.get("service_name", "xe")
+    return f"{host}:{port}/{service_name}"
+
 def get_db_uri() -> str:
     """Returns the database URI for SQLAlchemy connection.
 
@@ -124,6 +138,11 @@ def get_db_uri() -> str:
         return f"sqlite:///{settings.SQLITE_DB_PATH}"
         
     creds = get_db_credentials()
+    dsn = get_oracle_dsn(creds)
+    if dsn.startswith("("):
+        import urllib.parse
+        encoded_dsn = urllib.parse.quote_plus(dsn)
+        return f"oracle+oracledb://{creds['user']}:{creds['password']}@/?dsn={encoded_dsn}"
     return f"oracle+oracledb://{creds['user']}:{creds['password']}@{creds['host']}:{creds['port']}/{creds['service_name']}"
 
 def get_db_tables() -> List[str]:
@@ -156,9 +175,7 @@ def get_db_tables() -> List[str]:
         conn = oracledb.connect(
             user=creds["user"],
             password=creds["password"],
-            host=creds["host"],
-            port=creds["port"],
-            service_name=creds["service_name"]
+            dsn=get_oracle_dsn(creds)
         )
         cursor = conn.cursor()
         cursor.execute("SELECT table_name FROM user_tables ORDER BY table_name")
@@ -337,9 +354,7 @@ def initialize_oracle() -> None:
         conn = oracledb.connect(
             user=creds["user"],
             password=creds["password"],
-            host=creds["host"],
-            port=creds["port"],
-            service_name=creds["service_name"]
+            dsn=get_oracle_dsn(creds)
         )
     except Exception as e:
         logger.warning(
@@ -641,9 +656,7 @@ def test_db_connection() -> bool:
         conn = oracledb.connect(
             user=creds["user"],
             password=creds["password"],
-            host=creds["host"],
-            port=creds["port"],
-            service_name=creds["service_name"]
+            dsn=get_oracle_dsn(creds)
         )
         conn.close()
         return True
