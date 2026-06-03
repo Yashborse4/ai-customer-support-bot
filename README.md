@@ -12,7 +12,7 @@ graph TD
     A -->|Static Chat /chat| B
     B -->|Query / Retrieve| C[Local Vector Database]
     B -->|Checkpointer Persistence| D[MemorySaver Checkpoints]
-    B -->|LLM Bindings| E[Local LLM (Qwen 2.5)]
+    B -->|LLM Bindings| E["Local LLM (Qwen 2.5)"]
     B -->|SQL Queries| G[Oracle 11g Relational DB]
     C -->|Indexes| F[Multi-format Knowledge Base]
 ```
