@@ -27,7 +27,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     print("Initializing SQL Database...")
     initialize_database()
-    print("SQL Database ready.")
+    
+    # Load dynamic configurations into settings from SQLite DB
+    from src.database.sql_db import load_settings_from_db
+    load_settings_from_db()
+    print("SQL Database and System Settings ready.")
     
     print("Indexing documents for API...")
     vector_store_manager.load_and_index_documents("data")
@@ -260,7 +264,7 @@ class SaveConfigPayload(BaseModel):
 
 @app.get("/api/config")
 async def get_config() -> Dict[str, Any]:
-    """Retrieves dynamic model and database configurations."""
+    """Retrieves dynamic model and database configurations from system settings."""
     creds = get_db_credentials()
     return {
         "db_config": creds,
@@ -275,7 +279,7 @@ async def get_config() -> Dict[str, Any]:
 
 @app.post("/api/config")
 async def save_config(payload: SaveConfigPayload) -> Dict[str, str]:
-    """Saves dynamic database connection configurations or model settings.
+    """Saves dynamic database connection configurations or model settings to SQLite system settings.
 
     Args:
         payload: The config settings payload containing optional db_config and/or model_config.
@@ -286,32 +290,27 @@ async def save_config(payload: SaveConfigPayload) -> Dict[str, str]:
     Raises:
         HTTPException: If saving configuration fails.
     """
-    import json
-    import os
+    from src.database.sql_db import save_system_setting, load_settings_from_db
     
-    os.makedirs("data", exist_ok=True)
-    
-    if payload.db_config:
-        db_config_path = os.path.join("data", "db_config.json")
-        try:
-            with open(db_config_path, "w", encoding="utf-8") as f:
-                json.dump(payload.db_config.model_dump(), f, indent=4)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save db config: {e}")
+    try:
+        if payload.db_config:
+            save_system_setting("db_user", payload.db_config.user)
+            save_system_setting("db_password", payload.db_config.password)
+            save_system_setting("db_host", payload.db_config.host)
+            save_system_setting("db_port", str(payload.db_config.port))
+            save_system_setting("db_service_name", payload.db_config.service_name)
             
-    if payload.model_settings:
-        model_config_path = os.path.join("data", "model_config.json")
-        try:
-            with open(model_config_path, "w", encoding="utf-8") as f:
-                json.dump(payload.model_settings.model_dump(), f, indent=4)
-            # Update settings singleton attributes in-memory
-            settings.MODEL_NAME = payload.model_settings.MODEL_NAME
-            settings.EMBEDDING_MODEL = payload.model_settings.EMBEDDING_MODEL
-            settings.LOCAL_LLM_BASE_URL = payload.model_settings.LOCAL_LLM_BASE_URL
-            settings.LOCAL_EMBEDDING_BASE_URL = payload.model_settings.LOCAL_EMBEDDING_BASE_URL
-            settings.VECTOR_DB_TYPE = payload.model_settings.VECTOR_DB_TYPE
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save model config: {e}")
+        if payload.model_settings:
+            save_system_setting("model_name", payload.model_settings.MODEL_NAME)
+            save_system_setting("embedding_model", payload.model_settings.EMBEDDING_MODEL)
+            save_system_setting("local_llm_base_url", payload.model_settings.LOCAL_LLM_BASE_URL)
+            save_system_setting("local_embedding_base_url", payload.model_settings.LOCAL_EMBEDDING_BASE_URL)
+            save_system_setting("vector_db_type", payload.model_settings.VECTOR_DB_TYPE)
+            
+        # Synchronize dynamic settings singleton in memory
+        load_settings_from_db()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update settings in database: {e}")
             
     return {"status": "success", "message": "Configuration updated successfully."}
 

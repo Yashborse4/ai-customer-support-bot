@@ -16,6 +16,7 @@ def mock_db_connections():
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchone.return_value = [0]  # Simulate empty tables for table_exists/seeding
+        mock_cursor.fetchall.return_value = []    # Simulate empty settings for load_settings_from_db
         mock_conn.cursor.return_value = mock_cursor
         mock_connect.return_value = mock_conn
         mock_sqlite_connect.return_value = mock_conn

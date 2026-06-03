@@ -26,16 +26,25 @@ TABLE_DESCRIPTIONS: Dict[str, str] = {
 METADATA_DB_PATH = "data/metadata.db"
 
 def initialize_metadata_db() -> None:
-    """Initializes the SQLite database used to store table metadata/descriptions."""
+    """Initializes the SQLite database used to store table metadata and system settings."""
     import sqlite3
     os.makedirs(os.path.dirname(METADATA_DB_PATH), exist_ok=True)
     conn = sqlite3.connect(METADATA_DB_PATH)
     cursor = conn.cursor()
     try:
+        # Table metadata table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS table_metadata (
                 table_name TEXT PRIMARY KEY,
                 description TEXT NOT NULL
+            )
+        """)
+        
+        # System settings table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
         """)
         conn.commit()
@@ -47,6 +56,30 @@ def initialize_metadata_db() -> None:
                 cursor.execute(
                     "INSERT INTO table_metadata (table_name, description) VALUES (?, ?)",
                     (tbl.lower(), desc)
+                )
+            conn.commit()
+            
+        # Seed default settings from environment/Pydantic configurations if empty
+        cursor.execute("SELECT COUNT(*) FROM system_settings")
+        if cursor.fetchone()[0] == 0:
+            default_settings = {
+                "db_type": settings.DB_TYPE,
+                "sqlite_db_path": settings.SQLITE_DB_PATH,
+                "db_user": settings.DB_USER,
+                "db_password": settings.DB_PASSWORD,
+                "db_host": settings.DB_HOST,
+                "db_port": str(settings.DB_PORT),
+                "db_service_name": settings.DB_SERVICE_NAME,
+                "model_name": settings.MODEL_NAME,
+                "embedding_model": settings.EMBEDDING_MODEL,
+                "local_llm_base_url": settings.LOCAL_LLM_BASE_URL,
+                "local_embedding_base_url": settings.LOCAL_EMBEDDING_BASE_URL,
+                "vector_db_type": settings.VECTOR_DB_TYPE
+            }
+            for k, v in default_settings.items():
+                cursor.execute(
+                    "INSERT INTO system_settings (key, value) VALUES (?, ?)",
+                    (k, str(v))
                 )
             conn.commit()
     except Exception as e:
@@ -88,23 +121,65 @@ def save_table_metadata_db(table_name: str, description: str) -> None:
         logger.error("Failed to save table metadata to SQLite: %s", e)
         raise e
 
+def get_system_setting(key: str, default: Any = None) -> Any:
+    """Retrieves a system setting value from the SQLite metadata database."""
+    initialize_metadata_db()
+    import sqlite3
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key.lower(),))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+    except Exception as e:
+        logger.error("Failed to read system setting %s: %s", key, e)
+    return default
+
+def save_system_setting(key: str, value: str) -> None:
+    """Saves or updates a system setting in the SQLite metadata database."""
+    initialize_metadata_db()
+    import sqlite3
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+            (key.lower(), str(value))
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to save system setting %s: %s", key, e)
+        raise e
+
+def load_settings_from_db() -> None:
+    """Loads all system settings from SQLite database and overrides settings singleton."""
+    initialize_metadata_db()
+    import sqlite3
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM system_settings")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        for key, val in rows:
+            # Map database keys to settings attributes
+            attr = key.upper()
+            if hasattr(settings, attr):
+                # Cast port to int
+                if attr == "DB_PORT":
+                    setattr(settings, attr, int(val))
+                else:
+                    setattr(settings, attr, val)
+                logger.info("Configuration override from database: %s = %s", attr, val)
+    except Exception as e:
+        logger.error("Failed to load settings from DB: %s", e)
+
 def get_db_credentials() -> Dict[str, Any]:
-    """Loads database connection credentials, falling back to settings."""
-    config_path = os.path.join("data", "db_config.json")
-    if os.path.exists(config_path):
-        try:
-            import json
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-                return {
-                    "user": config.get("user", settings.DB_USER),
-                    "password": config.get("password", settings.DB_PASSWORD),
-                    "host": config.get("host", settings.DB_HOST),
-                    "port": int(config.get("port", settings.DB_PORT)),
-                    "service_name": config.get("service_name", settings.DB_SERVICE_NAME)
-                }
-        except Exception as e:
-            logger.error("Failed to load db_config.json: %s", e)
+    """Loads database connection credentials from settings."""
     return {
         "user": settings.DB_USER,
         "password": settings.DB_PASSWORD,

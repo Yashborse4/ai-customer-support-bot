@@ -2,7 +2,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
-from src.database.sql_db import initialize_database
+from src.database.sql_db import initialize_database, load_settings_from_db
 from src.database.vector_store import vector_store_manager
 from src.graph.workflow import support_bot_graph
 
@@ -16,7 +16,8 @@ async def main() -> None:
     # Initialize SQL database
     print("Initializing SQL Database...")
     initialize_database()
-    print("SQL Database ready.\n")
+    load_settings_from_db()
+    print("SQL Database and System Settings ready.\n")
     
     # Initialize RAG (Index documents in 'data/' directory)
     print("Indexing documents...")
