@@ -615,6 +615,30 @@ DEPARTMENT_TABLE_SCOPES: Dict[str, Set[str]] = {
     "general": {"customers", "orders", "products", "support_tickets", "returns", "shipping"}
 }
 
+def register_sandbox_guardrails(engine) -> None:
+    """Registers event listeners on the SQLAlchemy engine to block write queries in SQL Sandbox."""
+    # Skip event listener registration if engine is a Mock (e.g. during unit tests)
+    from unittest.mock import Mock
+    if isinstance(engine, Mock):
+        return
+
+    from sqlalchemy import event
+    import re
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def block_write_queries(conn, cursor, statement, parameters, context, executemany):
+        statement_upper = statement.strip().upper()
+        # List of forbidden SQL commands to sandbox the execution
+        forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "RENAME", "TRUNCATE", "REPLACE"]
+        
+        # Verify if any forbidden keyword is at the start of any command or subquery
+        for keyword in forbidden_keywords:
+            pattern = rf"\b{keyword}\b"
+            if re.search(pattern, statement_upper):
+                raise PermissionError(
+                    f"Security Alert: Execution of query containing forbidden keyword '{keyword}' is blocked."
+                )
+
 def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabase:
     """Selects relevant tables for a given query and returns a SQLDatabase instance.
 
@@ -703,10 +727,12 @@ def get_db_for_query(query: str, department: Optional[str] = None) -> SQLDatabas
     logger.info("Routing query '%s' (dept: %s) to database tables: %s", query, department, selected_list)
 
     # Initialize SQLDatabase with specific tables
-    return SQLDatabase.from_uri(
+    db = SQLDatabase.from_uri(
         get_db_uri(),
         include_tables=selected_list
     )
+    register_sandbox_guardrails(db.engine)
+    return db
 
 def test_db_connection() -> bool:
     """Tests connection to the database.
