@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 from langchain_core.documents import Document
 from src.core.config import settings
 from src.database.pdf_parser import parse_pdf_with_docling
-from src.database.vector_store import VectorStoreManager
+from src.database.vector_store import VectorStoreManager, ParentDocumentRetriever
 
 # Check for optional packages
 try:
@@ -99,7 +99,8 @@ def test_vector_store_manager_qdrant(mock_embeddings_cls, clean_db_dirs) -> None
         manager._initialize_store(documents=dummy_docs)
         mock_from_docs.assert_called_once()
         retriever = manager.get_retriever()
-        assert retriever == mock_retriever
+        assert isinstance(retriever, ParentDocumentRetriever)
+        assert retriever.vector_store == mock_qdrant_vector_store
 
 @patch("langchain_openai.OpenAIEmbeddings")
 def test_vector_store_manager_faiss(mock_embeddings_cls, clean_db_dirs) -> None:
@@ -129,4 +130,5 @@ def test_vector_store_manager_faiss(mock_embeddings_cls, clean_db_dirs) -> None:
         mock_faiss_store.save_local.assert_called_with(faiss_test_dir)
         
         retriever = manager.get_retriever()
-        assert retriever == mock_retriever
+        assert isinstance(retriever, ParentDocumentRetriever)
+        assert retriever.vector_store == mock_faiss_store

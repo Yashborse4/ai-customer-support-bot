@@ -47,6 +47,16 @@ def initialize_metadata_db() -> None:
                 value TEXT NOT NULL
             )
         """)
+        
+        # Parent documents table for Parent-Document RAG retrieval
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS parent_documents (
+                parent_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                source TEXT,
+                department TEXT
+            )
+        """)
         conn.commit()
         
         # Populate default descriptions if empty
@@ -153,6 +163,39 @@ def save_system_setting(key: str, value: str) -> None:
     except Exception as e:
         logger.error("Failed to save system setting %s: %s", key, e)
         raise e
+
+def save_parent_document(parent_id: str, content: str, source: Optional[str] = None, department: Optional[str] = None) -> None:
+    """Saves or updates a parent document in the SQLite metadata database."""
+    initialize_metadata_db()
+    import sqlite3
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO parent_documents (parent_id, content, source, department) VALUES (?, ?, ?, ?)",
+            (parent_id, content, source, department)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("Failed to save parent document %s: %s", parent_id, e)
+        raise e
+
+def get_parent_document(parent_id: str) -> Optional[str]:
+    """Retrieves a parent document's content from the SQLite metadata database."""
+    initialize_metadata_db()
+    import sqlite3
+    try:
+        conn = sqlite3.connect(METADATA_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT content FROM parent_documents WHERE parent_id = ?", (parent_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+    except Exception as e:
+        logger.error("Failed to read parent document %s: %s", parent_id, e)
+    return None
 
 def load_settings_from_db() -> None:
     """Loads all system settings from SQLite database and overrides settings singleton."""
