@@ -17,6 +17,7 @@ from src.database.sql_db import (
 )
 from src.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
+from src.core.security import PIISecurityGuard
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -151,23 +152,65 @@ async def event_generator(request: ChatRequest) -> AsyncGenerator[str, None]:
         JSON string representation of tokens generated or errors encountered.
     """
     try:
-        # Convert history to LangChain messages
-        messages = convert_to_langchain_messages(request.messages)
+        guard = PIISecurityGuard()
+        thread_id = request.thread_id or "default-session"
+        config = {"configurable": {"thread_id": thread_id}}
         
-        # Prepare state and checkpointer config
+        # Retrieve existing thread state to get the previous masking map
+        thread_state = await support_bot_graph.aget_state(config)
+        masking_map = thread_state.values.get("masking_map", {}) if thread_state and thread_state.values else {}
+        
+        # Mask all user messages in the request history
+        masked_messages = []
+        for msg in request.messages:
+            if msg.role == "user":
+                masked_content, masking_map = guard.mask(msg.content, masking_map)
+                masked_messages.append(ChatMessage(role=msg.role, content=masked_content, image_url=msg.image_url))
+            else:
+                masked_messages.append(msg)
+        
+        # Convert history to LangChain messages
+        messages = convert_to_langchain_messages(masked_messages)
+        
+        # Prepare state with the active masking map
         state = {
             "messages": messages,
-            "department": request.department or "general"
+            "department": request.department or "general",
+            "masking_map": masking_map
         }
-        config = {"configurable": {"thread_id": request.thread_id or "default-session"}}
         
+        stream_buffer = ""
         async for event in support_bot_graph.astream_events(state, config=config, version="v2"):
             # Intercept actual generated tokens from the model
             if event["event"] == "on_chat_model_stream":
                 chunk = event["data"]["chunk"]
                 if hasattr(chunk, "content") and chunk.content:
-                    # Emit chunk serialized as JSON formatted SSE data
-                    yield f"data: {json.dumps({'token': chunk.content})}\n\n"
+                    token = chunk.content
+                    stream_buffer += token
+                    
+                    # Unmask complete placeholders present in the buffer
+                    for placeholder, original in list(masking_map.items()):
+                        if placeholder in stream_buffer:
+                            stream_buffer = stream_buffer.replace(placeholder, original)
+                            
+                    # Buffer check: hold back partial placeholders to avoid rendering __[MASKED... to the user
+                    parts = stream_buffer.split("__")
+                    if len(parts) % 2 == 0:
+                        split_idx = stream_buffer.rfind("__")
+                        emit_part = stream_buffer[:split_idx]
+                        stream_buffer = stream_buffer[split_idx:]
+                    else:
+                        emit_part = stream_buffer
+                        stream_buffer = ""
+                        
+                    if emit_part:
+                        yield f"data: {json.dumps({'token': emit_part})}\n\n"
+                        
+        # Flush any remaining tokens in the stream buffer
+        if stream_buffer:
+            for placeholder, original in list(masking_map.items()):
+                stream_buffer = stream_buffer.replace(placeholder, original)
+            yield f"data: {json.dumps({'token': stream_buffer})}\n\n"
                     
     except Exception as e:
         # Emit graceful error block via SSE
@@ -199,26 +242,56 @@ async def chat(request: ChatRequest) -> ChatResponse:
         HTTPException: Internal server error if processing fails.
     """
     try:
-        # Convert history to LangChain messages
-        messages = convert_to_langchain_messages(request.messages)
+        guard = PIISecurityGuard()
+        thread_id = request.thread_id or "default-session"
+        config = {"configurable": {"thread_id": thread_id}}
         
-        # Prepare state and checkpointer config
+        # Retrieve existing thread state to get the previous masking map
+        thread_state = await support_bot_graph.aget_state(config)
+        masking_map = thread_state.values.get("masking_map", {}) if thread_state and thread_state.values else {}
+        
+        # Mask all user messages in the request history
+        masked_messages = []
+        for msg in request.messages:
+            if msg.role == "user":
+                masked_content, masking_map = guard.mask(msg.content, masking_map)
+                masked_messages.append(ChatMessage(role=msg.role, content=masked_content, image_url=msg.image_url))
+            else:
+                masked_messages.append(msg)
+                
+        # Convert history to LangChain messages
+        messages = convert_to_langchain_messages(masked_messages)
+        
+        # Prepare state with the active masking map
         state = {
             "messages": messages,
-            "department": request.department or "general"
+            "department": request.department or "general",
+            "masking_map": masking_map
         }
-        config = {"configurable": {"thread_id": request.thread_id or "default-session"}}
         
         # Invoke LangGraph
         result = await support_bot_graph.ainvoke(state, config=config)
         
-        # Extract last message and updated history
+        # Extract last message, masking map, and updated history
         updated_lc_messages = result["messages"]
         bot_response = updated_lc_messages[-1].content
+        final_masking_map = result.get("masking_map", masking_map)
+        
+        # Unmask the response and the history before returning to the user
+        unmasked_bot_response = guard.unmask(bot_response, final_masking_map)
+        
+        api_history = convert_to_api_messages(updated_lc_messages)
+        unmasked_history = []
+        for msg in api_history:
+            unmasked_history.append(ChatMessage(
+                role=msg.role,
+                content=guard.unmask(msg.content, final_masking_map),
+                image_url=msg.image_url
+            ))
         
         return ChatResponse(
-            response=bot_response,
-            history=convert_to_api_messages(updated_lc_messages)
+            response=unmasked_bot_response,
+            history=unmasked_history
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

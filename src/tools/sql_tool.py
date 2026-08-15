@@ -4,12 +4,15 @@ Exposes a LangChain tool that leverages an SQL Agent to query relational support
 """
 
 import logging
+from typing import Annotated
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.prebuilt import InjectedState
 from src.core.config import settings
 from src.database.sql_db import get_db_for_query
+from src.core.security import PIISecurityGuard
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -36,7 +39,11 @@ custom_sql_prompt = ChatPromptTemplate.from_messages([
 ])
 
 @tool
-async def query_customer_database(query: str, department: str = "general") -> str:
+async def query_customer_database(
+    query: str, 
+    department: str = "general", 
+    state: Annotated[dict, InjectedState] = None
+) -> str:
     """Queries the Acme Corp customer database using natural language.
 
     This tool connects to relational tables such as customers, orders, products,
@@ -47,11 +54,18 @@ async def query_customer_database(query: str, department: str = "general") -> st
     Args:
         query: The natural language question (e.g., 'What is Alice Johnson's loyalty tier?').
         department: Optional department scope (e.g., 'sales', 'support', 'general') of the request.
+        state: The LangGraph state injected automatically at runtime.
 
     Returns:
         The text response containing the answers retrieved from the database.
     """
-    db = get_db_for_query(query, department=department)
+    guard = PIISecurityGuard()
+    masking_map = state.get("masking_map", {}) if state else {}
+    
+    # Unmask the input query so the database queries can match real customer PII
+    unmasked_query = guard.unmask(query, masking_map)
+
+    db = get_db_for_query(unmasked_query, department=department)
     
     llm = ChatOpenAI(
         model=settings.MODEL_NAME,
@@ -69,18 +83,42 @@ async def query_customer_database(query: str, department: str = "general") -> st
     )
     
     try:
-        response = await agent_executor.ainvoke({"input": query})
-        return response.get("output", "Could not fetch data from database.")
+        response = await agent_executor.ainvoke({"input": unmasked_query})
+        raw_output = response.get("output", "Could not fetch data from database.")
+        
+        # Mask the output to ensure no raw PII leaks back to the main LLM or chat history
+        masked_output, updated_map = guard.mask(raw_output, masking_map)
+        if state is not None:
+            if "masking_map" not in state or not state["masking_map"]:
+                state["masking_map"] = {}
+            state["masking_map"].update(updated_map)
+            
+        return masked_output
     except Exception as e:
         logger.warning("SQL agent execution failed: %s. Retrying with self-correction...", e)
         try:
             # Query again, providing the failed query and execution error details to trigger self-correction
             retry_query = f"""The previous database query execution failed.
-User Question: {query}
+User Question: {unmasked_query}
 Error details: {str(e)}
 
 Please analyze the execution error and write a corrected query to fetch the correct data."""
             response = await agent_executor.ainvoke({"input": retry_query})
-            return response.get("output", f"Error executing database query: {str(e)}")
+            raw_output = response.get("output", f"Error executing database query: {str(e)}")
+            
+            # Mask the output for the retry query response
+            masked_output, updated_map = guard.mask(raw_output, masking_map)
+            if state is not None:
+                if "masking_map" not in state or not state["masking_map"]:
+                    state["masking_map"] = {}
+                state["masking_map"].update(updated_map)
+                
+            return masked_output
         except Exception as retry_err:
-            return f"Error executing database query: {str(retry_err)}"
+            error_output = f"Error executing database query: {str(retry_err)}"
+            masked_output, updated_map = guard.mask(error_output, masking_map)
+            if state is not None:
+                if "masking_map" not in state or not state["masking_map"]:
+                    state["masking_map"] = {}
+                state["masking_map"].update(updated_map)
+            return masked_output
