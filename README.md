@@ -41,7 +41,7 @@ graph TD
     Context -->|Return Parent Context| Agent
     DB -->|Return Masked Records| SQL
     Agent -->|4. Mask Output & Update Map| PII
-    PII -->|5. SSE Stream Buffer (Unmask)| Client
+    PII -->|5. SSE Stream Buffer - Unmask| Client
 ```
 
 ---
