@@ -1,6 +1,8 @@
-# AI Customer Support Bot (Enterprise Full-Stack RAG)
+# Enterprise AI Customer Support Bot (Full-Stack RAG & SQL Agent)
 
-A professional, enterprise-grade AI customer support platform built with a high-performance **FastAPI** backend and a sleek **Next.js** frontend. The core support engine utilizes **LangChain** and **LangGraph** to orchestrate RAG (Retrieval-Augmented Generation) workflows, ensuring highly accurate, context-grounded, and stateful responses to customer inquiries.
+An enterprise-grade, local-first AI customer support platform built with a high-performance **FastAPI** backend and a responsive **Next.js** frontend. The system leverages **LangChain** and **LangGraph** to orchestrate stateful, multi-agent Retrieval-Augmented Generation (RAG) and structured SQL agent workflows, persisting conversation sessions natively via SQLite checkpoints.
+
+This repository is designed to showcase production-ready LLM application patterns, focusing on **security sandboxing, PII redaction, stateful token streaming, and advanced retrieval architectures**.
 
 ---
 
@@ -8,167 +10,227 @@ A professional, enterprise-grade AI customer support platform built with a high-
 
 ```mermaid
 graph TD
-    A[Next.js React Client] -->|SSE Stream /chat/stream| B[FastAPI Backend]
-    A -->|Static Chat /chat| B
-    B -->|Query / Retrieve| C[Local Vector Database]
-    B -->|Checkpointer Persistence| D[MemorySaver Checkpoints]
-    B -->|LLM Bindings| E["Local LLM (Qwen 2.5)"]
-    B -->|SQL Queries| G[Oracle 11g Relational DB]
-    C -->|Indexes| F[Multi-format Knowledge Base]
+    Client["Next.js React Client"] -->|1. SSE Stream /chat/stream| API["FastAPI API Gateway"]
+    
+    subgraph FastAPI Backend
+        API -->|2. Mask PII & Initialize Turn| PII["PII Security Guard"]
+        PII -->|3. Invoke Stateful Execution| Graph["LangGraph Workflow"]
+        
+        subgraph LangGraph Support Engine
+            Graph -->|Checkpointer| Mem["MemorySaver Checkpoints"]
+            Graph -->|State Node| Agent["Support Agent Node"]
+            
+            Agent -->|Tool Call| SQL["SQL Agent Tool"]
+            Agent -->|Tool Call| RAG["RAG Retrieval Tool"]
+            
+            subgraph SQL Engine Sandbox
+                SQL -->|Unmask Query| SQLDB["SQL Database Engine"]
+                SQLDB -->|intercept before_cursor_execute| Guard["Write-Blocking Interceptor"]
+                Guard -->|Blocked| Err["PermissionError"]
+                Guard -->|Allowed SELECT| DB["Oracle 11g / SQLite DB"]
+            end
+            
+            subgraph Parent-Child RAG Pipeline
+                RAG -->|Query| Vector["Vector Store (Child Chunks)"]
+                Vector -->|Map parent_id| SQLite["SQLite Parent Doc Store"]
+                SQLite -->|Fetch Context| Context["Context-Rich Documents"]
+            end
+        end
+    end
+    
+    Context -->|Return Parent Context| Agent
+    DB -->|Return Masked Records| SQL
+    Agent -->|4. Mask Output & Update Map| PII
+    PII -->|5. SSE Stream Buffer (Unmask)| Client
 ```
 
-### Core Execution Flow
-1. **RAG Ingestion**: On server start, company documentation (PDFs, TXT, DOCX, and Excel files in `data/`) are processed using **Docling** and indexed into a local vector database (Qdrant/FAISS/ChromaDB) using local embeddings (e.g. `nomic-embed-text` via Ollama).
-2. **Relational Database Queries (SQL Agent)**: Integrates an **Oracle 11g** database containing transaction, customer profiles, shipping tracking, returns, and support ticket records. A LangChain SQL Agent queries this relational data using natural language via the `oracledb` thin client driver.
-3. **Table Selector & Router**: Dynamically matches user queries against table descriptions to load only relevant schemas into the SQL database context, preventing LLM prompt clutter when scaling to a high number of tables.
-4. **Stateful Conversation**: LangGraph maintains the support assistant's state, orchestrating conditional routing. If a customer query demands company specifics (products, shipping, returns, technical policies), the agent invokes a retrieval tool to fetch grounded knowledge.
-5. **Local LLM Orchestration**: Connects fully offline to Ollama or a custom local model gateway, running Qwen 2.5 or other local models, eliminating third-party API dependencies.
-6. **Real-time Streaming**: Model responses are streamed back to the Next.js client token-by-token using HTTP Server-Sent Events (SSE), reducing Time-to-First-Token (TTFT) and providing a premium, fluid user experience.
+---
+
+## 🌟 Core Engineering Enhancements
+
+### 1. PII Redaction & Data Security Guardrails
+To enforce compliance (GDPR, PCI-DSS) and prevent sensitive data leaks, the backend features a robust PII sanitization layer:
+* **Deterministic Masking:** User queries containing emails, credit cards, phone numbers, SSNs, or IP addresses are masked with deterministic tokens (e.g. `__[MASKED_EMAIL_0]__`) before entering the LangGraph state or database checkpointers.
+* **Turn Consistency:** Placeholder mappings are saved statefully in `SupportState` across multiple turns, reusing indices if a user mentions the same details again.
+* **SSE Stream Buffer:** A token-by-token stream buffer in the `/chat/stream` API intercepts outgoing model streams. It caches incomplete placeholders (holding back partial `__` segments) and yields the fully unmasked string to the user once reconstructed.
+
+```python
+# Real-time token streaming unmasking buffer in main.py
+parts = stream_buffer.split("__")
+if len(parts) % 2 == 0:
+    # Hold back partial placeholder forming at the end of the buffer
+    split_idx = stream_buffer.rfind("__")
+    emit_part = stream_buffer[:split_idx]
+    stream_buffer = stream_buffer[split_idx:]
+else:
+    emit_part = stream_buffer
+    stream_buffer = ""
+```
+
+### 2. Parent-Document Retrieval & Semantic Chunking
+Traditional character-based chunking often dilutes context, while indexing large documents causes prompt bloat. We solved this with a hybrid Parent-Child architecture:
+* **Semantic Chunking:** Text is split using sentence embeddings from our local Qwen model. It calculates the cosine similarity between consecutive sentences, dynamically computing a threshold (20th percentile) to split only where semantic shifts occur.
+* **SQLite Parent Doc Store:** Large parent blocks (2,000 characters) are saved in the `parent_documents` table in SQLite. Compact, semantically split child chunks are stored in Qdrant/FAISS, mapping to their respective `parent_id`.
+* **Precision Retrieval:** The custom `ParentDocumentRetriever` queries the vector store for child chunks but swaps them for the complete parent documents before prompting the LLM, ensuring the model gets the broader context.
+
+### 3. SQL Sandbox & Engine-Level Write Interceptor
+A LangChain SQL Agent dynamically queries transactions, shipping, returns, and ticket details. To prevent malicious or hallucinated database modifications:
+* **SQLAlchemy Event Listener:** An event hook (`before_cursor_execute`) intercepts every query compiled by the database engine.
+* **Strict Blacklisting:** The hook scans statements using regular expressions and blocks forbidden SQL commands (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `RENAME`, `TRUNCATE`, `REPLACE`) with a `PermissionError`.
+* **Scope Segregation:** Sandboxing runs dynamically on connections returned to the LLM agent, while database creation/seeding functions run securely under a separate write-enabled context.
+
+```python
+# SQL Interceptor in sql_db.py
+@event.listens_for(engine, "before_cursor_execute")
+def block_write_queries(conn, cursor, statement, parameters, context, executemany):
+    statement_upper = statement.strip().upper()
+    forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "RENAME", "TRUNCATE", "REPLACE"]
+    for keyword in forbidden_keywords:
+        if re.search(rf"\b{keyword}\b", statement_upper):
+            raise PermissionError(f"Security Alert: Forbidden keyword '{keyword}' is blocked.")
+```
+
+### 4. Dynamic Query Routing & Table Selection
+To prevent prompt clutter when scaling schemas, a semantic router selects relevant tables (e.g. `shipping` for shipping queries, `returns` for refund queries) based on natural language query keywords and department privileges (`sales`, `technical`, `billing`, `general`).
 
 ---
 
 ## 🛠️ Tech Stack
 
 ### Backend Service
-* **API Framework**: [FastAPI](https://fastapi.tiangolo.com/) (using asynchronous endpoints & Lifespan managers)
-* **Agentic Orchestration**: [LangGraph](https://github.com/langchain-ai/langgraph) (featuring `MemorySaver` thread checkpoints)
-* **LLM Engine**: LangChain community model integrations (supporting local **Qwen 2.5** and local embeddings)
-* **SQL Agent Toolkit**: LangChain `SQLDatabase` and `create_sql_agent`
-* **Vector Database**: Configurable [Qdrant](https://qdrant.tech/) or [FAISS](https://github.com/facebookresearch/faiss) or [ChromaDB](https://github.com/chroma-core/chroma)
-* **Relational Database**: **Oracle 11g** via `oracledb` Thin Driver and SQLAlchemy ORM
-* **Document Loaders**: **Docling** for advanced, unified offline layout-aware parsing of PDF, DOCX, and Excel files
+* **Orchestration**: [LangGraph](https://github.com/langchain-ai/langgraph) & [LangChain](https://www.langchain.com/) (Stateful workflows with `MemorySaver` thread persistence)
+* **API Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Async lifespan, StreamingResponse, Server-Sent Events)
+* **LLM Engine**: Local **Qwen 2.5** and local embeddings (`nomic-embed-text`) via Ollama/Local Gateway
+* **Vector Store**: Configurable [Qdrant](https://qdrant.tech/) or [FAISS](https://github.com/facebookresearch/faiss)
+* **Relational Database**: **Oracle 11g** via `oracledb` Thin Driver & **SQLite** via SQLAlchemy ORM
+* **Document Parsing**: **Docling** for layout-aware PDF, DOCX, and Excel structure extraction
 
-### Frontend Interface
+### Frontend Client
 * **Framework**: [Next.js](https://nextjs.org/) (React, TypeScript)
-* **Styling**: [Tailwind CSS](https://tailwindcss.com/) & Vanilla CSS with beautiful dark-mode glassmorphic aesthetics
-* **Streaming Client**: Native `fetch` with `ReadableStream` for smooth token-by-token UI rendering
-* **UX/UI Highlights**: Interactive chat interface, multi-modal screenshot attachment, and an expandable **RAG Insights side panel** displaying precise document sources and text snippets.
+* **Styling**: [Tailwind CSS](https://tailwindcss.com/) (Dark-mode glassmorphic aesthetics)
+* **Streaming Client**: Native `fetch` with `ReadableStream` for real-time SSE token rendering
+* **Insights Panel**: Side drawer displaying precise RAG source document matches and metadata
 
 ---
 
-## ✨ Features
+## 📁 Repository Structure
 
-* **Retrieval-Augmented Generation (RAG)**: Automatically searches and retrieves company documentation to ground replies.
-* **LangChain SQL Agent**: Automatically writes, verifies, and executes SQL queries to fetch structured order details, tracking status, support tickets, and inventory levels.
-* **Dynamic Table Routing**: Semantic routing filters and groups tables for the SQL Agent based on user query intent, preventing prompt bloat and schema confusion.
-* **Server-Sent Events (SSE) Streaming**: Token-by-token text generation rendering in real-time.
-* **Multi-Modal Support**: Allows customers to attach error screenshots alongside their questions.
-* **Stateful Tool Calling**: Agent decides when to search the knowledge base or query relational tables using native LangGraph conditional edges.
-* **Docker Containerization**: Multi-stage Docker configurations for both development and production deployment.
+```text
+├── src/
+│   ├── api/
+│   │   └── main.py          # FastAPI application, streaming router, & endpoints
+│   ├── agents/
+│   │   └── support_agent.py # LangChain support agent node prompt & tool bindings
+│   ├── tools/
+│   │   ├── sql_tool.py      # Database agent query tool with PII unmasking
+│   │   └── retrieval_tool.py# Knowledge base lookup tool
+│   ├── database/
+│   │   ├── sql_db.py        # Oracle/SQLite setups, mock seeding, and SQL sandbox listener
+│   │   ├── vector_store.py  # SemanticChunker, ParentDocumentRetriever, & Docling indexing
+│   │   └── pdf_parser.py    # Docling & PyPDF extraction pipelines
+│   ├── core/
+│   │   ├── config.py        # Pydantic Settings and SQLite config loaders
+│   │   └── security.py      # PIISecurityGuard utility class
+│   ├── schemas/
+│   │   └── state.py         # SupportState dict definition
+│   └── graph/
+│       └── workflow.py      # LangGraph state workflow compilation
+├── tests/
+│   ├── test_pii_security.py # PII masking, turn persistence, and SSE buffer tests
+│   ├── test_semantic_rag.py # Semantic Chunking & Parent-child retriever tests
+│   ├── test_sql_sandbox.py  # Write-blocking SQL interceptor tests
+│   ├── test_sql_agent.py    # Database initializations and routing tests
+│   └── test_docling_vector_stores.py # Vector store mocking and Qdrant/FAISS indexing tests
+└── frontend/                # Next.js UI folder
+```
 
 ---
 
 ## ⚙️ Getting Started
 
-### Prerequisites
-* Docker & Docker Compose (Recommended)
-* OR Python 3.9+ & Node.js 18+
-* Local LLM runner (e.g., [Ollama](https://ollama.com/) with Qwen 2.5 model pulled)
-* Oracle 11g Database (or containerized Oracle instance)
+### 1. Configure Environment Variables
+Create a `.env` file in the root directory:
+```env
+# Relational Database Selection (sqlite or oracle)
+DB_TYPE=sqlite
+SQLITE_DB_PATH=data/customer_support.db
 
----
+# Oracle 11g Database Configuration (only used if DB_TYPE=oracle)
+DB_USER=system
+DB_PASSWORD=oracle
+DB_HOST=localhost
+DB_PORT=1521
+DB_SERVICE_NAME=xe
 
-### Method A: Running with Docker Compose (Quickest)
+# Vector Store Configuration
+PERSIST_DIRECTORY=./chroma_db
+COLLECTION_NAME=customer_support_kb
+VECTOR_DB_TYPE=qdrant
+QDRANT_PATH=./qdrant_db
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Yashborse4/ai-customer-support-bot.git
-   cd ai-customer-support-bot
-   ```
+# Model Configuration
+MODEL_NAME=qwen2.5
+EMBEDDING_MODEL=nomic-embed-text
+LOCAL_LLM_BASE_URL=http://localhost:11434/v1
+LOCAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
 
-2. Configure environment variables:
-   Create a `.env` file in the root directory:
-   ```env
-    # Relational Database Selection (sqlite or oracle)
-    DB_TYPE=sqlite
-    SQLITE_DB_PATH=data/customer_support.db
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
 
-    # Oracle 11g Database Configuration (only used if DB_TYPE=oracle)
-    DB_USER=system
-    DB_PASSWORD=oracle
-    DB_HOST=localhost
-    DB_PORT=1521
-    DB_SERVICE_NAME=xe
+### 2. Method A: Running via Docker Compose (Recommended)
+Launch the frontend, backend, and database in a single command:
+```bash
+docker compose up --build
+```
+* Next.js Frontend: `http://localhost:3000`
+* FastAPI Backend: `http://localhost:8000`
+* FastAPI Swagger Docs: `http://localhost:8000/docs`
 
-   # Vector Store Configuration
-   PERSIST_DIRECTORY=./chroma_db
-   COLLECTION_NAME=customer_support_kb
-
-   # Model Configuration
-   MODEL_NAME=qwen2.5
-   EMBEDDING_MODEL=nomic-embed-text
-   LOCAL_LLM_BASE_URL=http://localhost:11434/v1
-   LOCAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
-
-   NEXT_PUBLIC_API_URL=http://localhost:8000
-   ```
-
-3. Launch the complete application:
-   ```bash
-   docker compose up --build
-   ```
-   * Next.js Frontend: `http://localhost:3000`
-   * FastAPI Backend: `http://localhost:8000`
-   * FastAPI Swagger Docs: `http://localhost:8000/docs`
-
----
-
-### Method B: Manual Local Setup
-
-#### 1. Start the FastAPI Backend
-1. Create a Python virtual environment and install packages:
+### 3. Method B: Manual Local Setup
+#### Backend
+1. Initialize virtual environment and install packages:
    ```bash
    python -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    ```
-
-2. Make sure your `.env` file is properly configured with your database selection (`DB_TYPE` and paths) and local model URLs.
-
-3. Place company documentation (e.g., PDFs, TXT, DOCX, or Excel files) inside the `data/` directory.
-
-4. Run the API server (will automatically initialize your selected database—SQLite or Oracle—populating tables and mock seed data if they do not exist):
+2. Start the API server:
    ```bash
    uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
-#### 2. Start the Next.js Frontend
-1. Open a new terminal in the `frontend` folder:
+#### Frontend
+1. Install node dependencies:
    ```bash
    cd frontend
    npm install
    ```
-
-2. Start the Next.js local development server:
+2. Run development server:
    ```bash
    npm run dev
    ```
-   Open `http://localhost:3000` in your browser.
+   Access `http://localhost:3000` in your web browser.
 
 ---
 
-## 🧪 Testing
+## 🧪 Verification & Testing
 
-The codebase includes an extensive unit and integration test suite (fully typed, leveraging `pytest` and `fastapi.testclient`):
+The project includes an extensive test suite verifying RAG, SQL, security boundaries, and API streaming configurations.
 
-To run tests:
+To run the complete test suite:
 ```bash
-$env:PYTHONPATH="."
-python -m pytest
+.venv\Scripts\python -m pytest
 ```
 
----
+### Passing Test Run Summary:
+```text
+tests\test_basic.py ..                                                   [  6%]
+tests\test_docling_vector_stores.py ....                                 [ 18%]
+tests\test_improvements.py ......                                        [ 37%]
+tests\test_pii_security.py ...                                           [ 46%]
+tests\test_semantic_rag.py ....                                          [ 59%]
+tests\test_sql_agent.py ....                                             [ 71%]
+tests\test_sql_sandbox.py .........                                      [100%]
 
-## 📈 Project Roadmap
-
-- [x] Complete Multi-modal query integration (Vision analysis for error screenshots).
-- [x] Robust PDF, DOCX, and Excel indexing system using Docling.
-- [x] Migrate relational database to Oracle 11g with thin client driver support.
-- [x] Implement Dynamic Table Selection & Routing for large schemas.
-- [x] State-of-the-art token streaming architecture (SSE) for low Time-to-First-Token (TTFT).
-- [x] Premium Next.js interactive frontend with RAG insights.
-- [ ] Integration with Slack and Discord channels.
-- [ ] Advanced analytics and administrator dashboard for human support operators.
-
----
-Built with ❤️ by [Yash Borse](https://github.com/Yashborse4)
+================== 32 passed, 1 warning in 140.96s (0:02:20) ==================
+```
