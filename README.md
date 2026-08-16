@@ -46,38 +46,17 @@ graph TD
 
 ---
 
-## 🌟 Core Engineering Enhancements
+## 🌟 Key Capabilities & Implemented Features
 
-### 1. PII Redaction & Data Security Guardrails
-To enforce compliance (GDPR, PCI-DSS) and prevent sensitive data leaks, the backend features a robust PII sanitization layer:
-* **Deterministic Masking:** User queries containing emails, credit cards, phone numbers, SSNs, or IP addresses are masked with deterministic tokens (e.g. `__[MASKED_EMAIL_0]__`) before entering the LangGraph state or database checkpointers.
-* **Turn Consistency:** Placeholder mappings are saved statefully in `SupportState` across multiple turns, reusing indices if a user mentions the same details again.
-* **SSE Stream Buffer:** A token-by-token stream buffer in the `/chat/stream` API intercepts outgoing model streams. It caches incomplete placeholders (holding back partial `__` segments) and yields the fully unmasked string to the user once reconstructed.
+This project features a comprehensive suite of enterprise-grade capabilities designed for robustness, performance, compliance, and user experience.
 
-```python
-# Real-time token streaming unmasking buffer in main.py
-parts = stream_buffer.split("__")
-if len(parts) % 2 == 0:
-    # Hold back partial placeholder forming at the end of the buffer
-    split_idx = stream_buffer.rfind("__")
-    emit_part = stream_buffer[:split_idx]
-    stream_buffer = stream_buffer[split_idx:]
-else:
-    emit_part = stream_buffer
-    stream_buffer = ""
-```
+### 🔒 Security, Compliance, & Guardrails
 
-### 2. Parent-Document Retrieval & Semantic Chunking
-Traditional character-based chunking often dilutes context, while indexing large documents causes prompt bloat. We solved this with a hybrid Parent-Child architecture:
-* **Semantic Chunking:** Text is split using sentence embeddings from our local Qwen model. It calculates the cosine similarity between consecutive sentences, dynamically computing a threshold (20th percentile) to split only where semantic shifts occur.
-* **SQLite Parent Doc Store:** Large parent blocks (2,000 characters) are saved in the `parent_documents` table in SQLite. Compact, semantically split child chunks are stored in Qdrant/FAISS, mapping to their respective `parent_id`.
-* **Precision Retrieval:** The custom `ParentDocumentRetriever` queries the vector store for child chunks but swaps them for the complete parent documents before prompting the LLM, ensuring the model gets the broader context.
-
-### 3. SQL Sandbox & Engine-Level Write Interceptor
-A LangChain SQL Agent dynamically queries transactions, shipping, returns, and ticket details. To prevent malicious or hallucinated database modifications:
-* **SQLAlchemy Event Listener:** An event hook (`before_cursor_execute`) intercepts every query compiled by the database engine.
-* **Strict Blacklisting:** The hook scans statements using regular expressions and blocks forbidden SQL commands (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `RENAME`, `TRUNCATE`, `REPLACE`) with a `PermissionError`.
-* **Scope Segregation:** Sandboxing runs dynamically on connections returned to the LLM agent, while database creation/seeding functions run securely under a separate write-enabled context.
+#### 1. SQL Sandbox & Engine-Level Write Interceptor
+A LangChain SQL Agent dynamically queries customer orders, profiles, and tickets. To prevent malicious database injections or accidental write/delete operations from LLM hallucinations:
+* **SQLAlchemy Event Hooks:** Registers a listener (`before_cursor_execute`) on the SQLAlchemy engine.
+* **Strict Blacklisting:** The hook scans statements using regular expressions and blocks forbidden SQL keywords (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `RENAME`, `TRUNCATE`, `REPLACE`) by raising a `PermissionError`.
+* **Execution Segregation:** This read-only sandbox is dynamically applied to connection engines returned to the LLM agent, while local database creation/seeding functions execute safely under a separate write-enabled database context.
 
 ```python
 # SQL Interceptor in sql_db.py
@@ -90,8 +69,52 @@ def block_write_queries(conn, cursor, statement, parameters, context, executeman
             raise PermissionError(f"Security Alert: Forbidden keyword '{keyword}' is blocked.")
 ```
 
-### 4. Dynamic Query Routing & Table Selection
-To prevent prompt clutter when scaling schemas, a semantic router selects relevant tables (e.g. `shipping` for shipping queries, `returns` for refund queries) based on natural language query keywords and department privileges (`sales`, `technical`, `billing`, `general`).
+#### 2. PII Redaction & Data Security Guardrails
+To satisfy compliance standards (such as GDPR, HIPAA, and PCI-DSS) and keep logs clean of sensitive data:
+* **Deterministic Masking:** User queries containing emails, credit cards, phone numbers, SSNs, or IP addresses are replaced with unique tokens (e.g. `__[MASKED_EMAIL_0]__`) before the data is written to checkpointer databases or standard logging channels.
+* **Turn Consistency:** Placeholder mappings are saved statefully in `SupportState` across turns, reusing indices if a user repeats a detail in later messages.
+* **SSE Stream Buffer:** A stream buffer in the `/chat/stream` API intercepts outgoing model streams. It caches incomplete placeholders (holding back partial `__` segments) and yields the fully unmasked string to the user once reconstructed.
+
+---
+
+### 🧠 Advanced RAG & Retrieval Logic
+
+#### 3. Parent-Document Retrieval (PDR)
+Traditional chunking methods dilute context, while indexing large documents causes prompt bloat. We solved this with a hybrid Parent-Child architecture:
+* **SQLite Parent Doc Store:** Large parent blocks (2,000 characters) are saved in the `parent_documents` table in SQLite. Compact, semantically split child chunks are stored in Qdrant/FAISS, mapping to their respective `parent_id`.
+* **Precision Retrieval:** The custom `ParentDocumentRetriever` queries the vector store for child chunks but swaps them for the complete parent documents before prompting the LLM, ensuring the model gets the broader context.
+
+#### 4. Semantic Chunking
+* Text is split using sentence embeddings from our local Qwen model. It calculates the cosine similarity between consecutive sentences, dynamically computing a threshold (20th percentile) to split only where semantic shifts occur.
+
+#### 5. Layout-Aware Docling PDF/Excel Parsing
+* Replaced standard text loaders with **Docling** to perform layout-aware document extraction. This allows the bot to parse multi-column PDF manuals, Word documents, CSV lists, and complex Excel matrices with table structure integrity.
+
+---
+
+### ⚙️ Database & State Management
+
+#### 6. Dynamic Database Selector (SQLite / Oracle 11g Thin Client)
+* Supports swappable relational database layers. It connects natively to a local SQLite database for rapid local development or to a production **Oracle 11g** instance using the `oracledb` thin client driver with support for custom TNS descriptors.
+
+#### 7. Centralized Metadata & Configuration Store
+* Migrated from static JSON configuration files (`db_config.json`, `model_config.json`) to a centralized metadata store in SQLite (`data/metadata.db`). Global setting overrides are pulled and synchronized cached in memory on API lifespan startup.
+
+#### 8. Dynamic Query Routing & Table Selection
+* To prevent prompt clutter when scaling schemas, a semantic router selects relevant tables (e.g. `shipping` for shipping queries, `returns` for refund queries) based on natural language query keywords and department privileges (`sales`, `technical`, `billing`, `general`).
+
+---
+
+### 💻 UX & Frontend Integration
+
+#### 9. Real-Time Server-Sent Events (SSE) Streaming
+* Generates bot replies token-by-token using async FastAPI stream generators, reducing Time-to-First-Token (TTFT) and providing a fluid client experience.
+
+#### 10. Multi-Modal Vision Support
+* Enables users to upload setups or error screenshots along with their text inquiries. The backend processes the base64 screenshots and binds them to the LLM context for visual diagnosis.
+
+#### 11. Expandable RAG Insights Drawer
+* Next.js panel showing retrieved document titles, source paths, and matching text snippets so the user can verify document grounding instantly.
 
 ---
 
